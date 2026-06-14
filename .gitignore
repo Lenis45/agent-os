@@ -1,0 +1,55 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+agents/.env*
+agents/.en
+agents/.en.*
+agents/credentials.json
+agents/token.json
+agents/*.session
+*.env*
+!*.env.example
+!agents/.env.example
+
+# ── Logs & runtime state ──────────────────────────────────────────────────────
+agents/*.log
+agents/*.log.*.gz
+agents/worker.log
+backups/backup.log
+backups/backup-osascript.log
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# ── Node / office-fork ────────────────────────────────────────────────────────
+office-fork/node_modules/
+office-fork/dist/
+office-fork/server/dist/
+node_modules/
+dist/
+
+# ── Python virtual envs ───────────────────────────────────────────────────────
+.venv/
+venv/
+mcp/.venv/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# ── Backups (binary dumps & local snapshots) ──────────────────────────────────
+backups/local/
+backups/*.sql.gz
+backups/*.tar.gz
+backups/restore_test.sh
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp

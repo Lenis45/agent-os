@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amori Infra · Ops</title>
+<style>
+  :root{--bg:#0A0D11;--panel:#11151B;--panel2:#161B22;--border:#21262D;--fg:#E6EDF3;
+    --muted:#7d8aa3;--accent:#5b8cff;--green:#56D364;--red:#FF7B72;--amber:#F2A93B;
+    --cyan:#79C0FF;--purple:#D2A8FF;}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:50px}
+  .wrap{max-width:1400px;margin:0 auto;padding:0 22px}
+  header{position:sticky;top:0;z-index:50;background:rgba(10,13,17,.88);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:14px 0;margin-bottom:22px}
+  .hd{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .logo{font-size:19px;font-weight:800}.logo span{color:var(--accent)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:99px;font-size:12px;font-weight:600;background:var(--panel2);border:1px solid var(--border)}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .g{background:var(--green);box-shadow:0 0 8px var(--green)}.r{background:var(--red);box-shadow:0 0 8px var(--red)}.a{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .spacer{flex:1}.ts{color:var(--muted);font-size:12px}
+  .btn{cursor:pointer;background:var(--accent);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-weight:600;font-size:13px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:30px 0 12px;font-weight:700}
+  .grid{display:grid;gap:14px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:16px}
+  .stat .big{font-size:28px;font-weight:800;line-height:1}
+  .stat .lbl{color:var(--muted);font-size:11px;margin-top:6px;text-transform:uppercase;letter-spacing:.5px}
+  .stat .sub{font-size:12px;margin-top:6px;color:var(--muted)}
+  .ok{color:var(--green)}.no{color:var(--red)}.warnc{color:var(--amber)}
+  .agrid{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+  .ag{padding:13px 14px}
+  .ag-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .ag-name{font-weight:700;font-size:14px}
+  .ag-meta{color:var(--muted);font-size:12px;display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .tag{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;text-transform:uppercase}
+  .tag.personal{background:rgba(86,211,100,.14);color:var(--green)}
+  .tag.customer{background:rgba(121,192,255,.14);color:var(--cyan)}
+  .tag.ops{background:rgba(210,168,255,.14);color:var(--purple)}
+  .st{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .st.running,.st.scheduled,.st.cron,.st.ok{background:rgba(86,211,100,.15);color:var(--green)}
+  .st.down,.st.fail{background:rgba(255,123,114,.18);color:var(--red)}
+  .st.ondemand,.st.loaded,.st.partial{background:rgba(242,169,59,.15);color:var(--amber)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:6px 10px;border-bottom:1px solid var(--border)}
+  td{padding:7px 10px;border-bottom:1px solid rgba(33,38,45,.6)}
+  tr:last-child td{border-bottom:none}
+  .two{grid-template-columns:1fr 1fr}.three{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+  .kv{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(33,38,45,.5)}
+  .kv:last-child{border:none}.kv .k{color:var(--muted)}.kv .v{font-weight:700;font-family:ui-monospace,monospace}
+  .mono{font-family:ui-monospace,monospace}
+  .db h4{font-size:12px;color:var(--cyan);font-family:ui-monospace,monospace;margin-bottom:7px}
+  .empty{color:var(--muted);font-style:italic;font-size:12px;padding:8px 4px}
+  .loading{text-align:center;color:var(--muted);padding:60px}
+</style>
+</head>
+<body>
+<header><div class="wrap hd">
+  <div class="logo">⚙️ Amori <span>Infra</span></div>
+  <span class="pill" id="overall"><span class="dot a"></span>…</span>
+  <div class="spacer"></div>
+  <a class="btn" href="/docs" target="_blank" style="text-decoration:none;background:var(--panel2);border:1px solid var(--border)" title="Документация системы">📖 Как это работает</a>
+  <span class="ts" id="ts"></span>
+  <label class="pill"><input type="checkbox" id="auto" checked style="margin-right:4px"> авто</label>
+  <button class="btn" onclick="refresh()">↻</button>
+</div></header>
+<div class="wrap" id="app"><div class="loading">Подключение…</div></div>
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeAgent()">
+  <div class="panel" style="max-width:440px;width:92%;padding:22px;max-height:88vh;overflow:auto" onclick="event.stopPropagation()" id="modalBody"></div>
+</div>
+<script>
+const $=(s)=>document.querySelector(s);
+const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let timer=null;
+let lastState=null;
+
+function cards(s){const u=s.summary;return `<div class="grid cards">
+  <div class="panel stat"><div class="big ${u.agents_up===u.agents_total?'ok':''}">${u.agents_up}/${u.agents_total}</div><div class="lbl">Агенты активны</div></div>
+  <div class="panel stat"><div class="big ${u.containers_up===u.containers_total?'ok':'no'}">${u.containers_up}/${u.containers_total}</div><div class="lbl">Контейнеры</div></div>
+  <div class="panel stat"><div class="big">${u.month_cost}₽</div><div class="lbl">LLM расход / мес</div><div class="sub">платный API: ${u.paid_cost}₽ / ${u.paid_cap}₽</div></div>
+  <div class="panel stat"><div class="big">${(s.usage||[]).reduce((a,x)=>a+ (x.calls||0),0)}</div><div class="lbl">LLM-вызовов учтено</div><div class="sub">${(s.usage||[]).length} агентов</div></div>
+</div>`;}
+
+function agentCards(s){return `<div class="grid agrid">${s.agents.map(a=>`
+  <div class="panel ag" style="cursor:pointer" onclick='openAgent(${JSON.stringify(a.key)})' title="Настройки агента">
+    <div class="ag-top"><span class="ag-name">${esc(a.name)}</span><span class="st ${a.status}">${esc(a.status)}</span></div>
+    <div class="ag-meta"><span class="tag ${a.contour}">${esc(a.contour)}</span><span>${esc(a.schedule)}</span></div>
+    <div class="ag-meta"><span class="mono" style="font-size:11px">${esc((a.model||'').replace('groq/','').replace('ollama/',''))}${a.model_overridden?' ✎':''}</span></div>
+    <div class="ag-meta">${a.pid?`<span>pid ${a.pid}</span>`:''}<span>вызовов: <b>${a.calls||0}</b></span>${a.last_call?`<span>посл: ${esc(a.last_call)}</span>`:''}<span style="margin-left:auto;color:var(--accent)">⚙</span></div>
+  </div>`).join('')}</div>`;}
+
+function tbl(cols,rows,fmt){if(!rows||!rows.length)return `<div class="empty">нет данных</div>`;
+  return `<table><thead><tr>${cols.map(c=>`<th>${c[1]}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${(fmt&&fmt[c[0]])?fmt[c[0]](r[c[0]],r):esc(r[c[0]])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;}
+
+function stFmt(v){return `<span class="st ${esc(v)}">${esc(v)}</span>`;}
+
+function domTag(d){return ({content:'customer',research:'ops',dev:'personal',ops:'personal',infra:'ops'}[d])||'ops';}
+function teamTree(s){
+  const reg=s.registry||[]; const byP={};
+  reg.forEach(r=>{(byP[r.parent_agent]=byP[r.parent_agent]||[]).push(r);});
+  const node=r=>`<div style="padding:2px 0"><span class="tag ${domTag(r.domain)}">${esc(r.domain||'')}</span> <b>${esc(r.display_name||r.agent_key)}</b> <span style="color:var(--muted);font-size:10px">${esc(r.kind)}${r.role?' · '+esc(r.role):''}</span></div>`;
+  let html='';
+  (reg.filter(r=>!r.parent_agent)).forEach(t=>{
+    html+=node(t);
+    (byP[t.agent_key]||[]).forEach(k=>{
+      html+=`<div style="margin-left:16px;border-left:1px solid var(--border);padding-left:8px">${node(k)}`;
+      (byP[k.agent_key]||[]).forEach(w=>{html+=`<div style="margin-left:16px;border-left:1px solid var(--border);padding-left:8px">${node(w)}</div>`;});
+      html+='</div>';
+    });
+  });
+  return `<div class="panel" style="max-height:340px;overflow:auto">${html||'<div class="empty">—</div>'}</div>`;
+}
+function projectCards(s){
+  const ps=s.projects||[];
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(210px,1fr))">${ps.map(p=>`
+    <div class="panel"><div style="display:flex;justify-content:space-between;gap:6px"><b style="font-size:13px">${esc(String(p.name).slice(0,38))}</b><span class="st ${p.status==='done'?'ok':'running'}">${esc(p.status)}</span></div>
+    <div class="ag-meta"><span class="tag ${domTag(p.domain)}">${esc(p.domain||'—')}</span></div>
+    <div class="ag-meta"><span class="ok">✅ ${p.done}/${p.total}</span>${p.active?`<span class="warnc">⏳ ${p.active}</span>`:''}${p.failed?`<span class="no">✗ ${p.failed}</span>`:''}</div></div>`).join('')||'<div class="empty">пока нет проектов — нажми «+ Новый проект»</div>'}</div>`;
+}
+async function newProject(){const goal=prompt('Цель проекта для AI-команды:');if(!goal||!goal.trim())return;await fetch('/api/project/new',{method:'POST',body:JSON.stringify({goal:goal.trim()})});setTimeout(refresh,1500);}
+
+function contentPanel(s){
+  const items=s.content||[];
+  const stCls=st=>({pending:'loaded',approved:'running',published:'ok',rejected:'down'}[st]||'loaded');
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">${items.map(c=>`
+    <div class="panel" onclick='openContent(${JSON.stringify(c)})' style="cursor:pointer">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
+        <span><span class="tag ops">${esc(c.kind)}</span> <span class="tag customer">${esc(c.channel)}</span></span>
+        <span class="st ${stCls(c.status)}">${esc(c.status)}</span></div>
+      <div style="font-size:12.5px;margin:9px 0;max-height:84px;overflow:hidden;color:var(--fg)">${esc(String(c.body||c.title||'').slice(0,240))}</div>
+      ${c.status==='pending'?`<div style="display:flex;gap:6px" onclick="event.stopPropagation()">
+        <button class="btn" style="flex:1;background:var(--green)" onclick="approveContent(${c.id})">✅ Опубликовать</button>
+        <button class="btn" style="background:var(--panel2);color:var(--muted)" onclick="rejectContent(${c.id})" title="Отклонить">✗</button></div>`:
+        `<div style="font-size:11px;color:var(--muted)">${esc(c.created||'')}</div>`}
+    </div>`).join('')||'<div class="empty">пока нет контента — нажми «+ Создать контент»</div>'}</div>`;
+}
+async function newContent(){
+  const brief=prompt('Бриф: какой контент нужен и для чего?'); if(!brief||!brief.trim())return;
+  const channel=(prompt('Канал: telegram / vk / email / landing / ad','telegram')||'telegram').trim();
+  const kind=(prompt('Формат: post / email / ad_creative / landing','post')||'post').trim();
+  await fetch('/api/content/new',{method:'POST',body:JSON.stringify({brief:brief.trim(),channel,kind})});
+  alert('🏭 Контент генерируется (~10–40с). Скоро появится на аппрув — обнови панель.');
+  setTimeout(refresh,3500);
+}
+async function approveContent(id){const r=await fetch('/api/content/approve',{method:'POST',body:JSON.stringify({id})});closeAgent();setTimeout(refresh,1300);}
+async function rejectContent(id){await fetch('/api/content/reject',{method:'POST',body:JSON.stringify({id})});closeAgent();setTimeout(refresh,1000);}
+function openContent(c){
+  $('#modalBody').innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h2 style="margin:0;font-size:16px">🏭 Контент #${c.id} · ${esc(c.kind)}/${esc(c.channel)}</h2>
+      <span style="cursor:pointer;color:var(--muted);font-size:20px" onclick="closeAgent()">✕</span></div>
+    <div class="ag-meta" style="margin-bottom:10px"><span class="st ${({pending:'loaded',approved:'running',published:'ok',rejected:'down'}[c.status])||'loaded'}">${esc(c.status)}</span><span>${esc(c.created||'')}</span></div>
+    <div style="font-size:13px;white-space:pre-wrap;max-height:40vh;overflow:auto;background:var(--panel2);padding:12px;border-radius:8px">${esc(c.body||'')}</div>
+    ${c.image_brief?`<div style="margin-top:10px;font-size:11px;color:var(--muted);white-space:pre-wrap;max-height:20vh;overflow:auto">🎨 ${esc(c.image_brief)}</div>`:''}
+    ${c.status==='pending'?`<div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" style="flex:1;background:var(--green)" onclick="approveContent(${c.id})">✅ Одобрить и опубликовать</button>
+      <button class="btn" style="background:var(--panel2);color:var(--muted)" onclick="rejectContent(${c.id})">✗ Отклонить</button></div>`:''}`;
+  $('#modal').style.display='flex';
+}
+
+function kanban(s){
+  const ts=s.tasks||[]; const cols=[['running','🔵 В работе'],['queued','⏳ В очереди'],['failed','✗ Ошибки'],['done','✅ Готово']];
+  const byCol={}; ts.forEach(t=>{const c=(t.status==='claimed')?'running':t.status;(byCol[c]=byCol[c]||[]).push(t);});
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">${cols.map(([k,label])=>`
+    <div class="panel"><div style="font-weight:700;font-size:12.5px;margin-bottom:8px">${label} <span style="color:var(--muted)">${(byCol[k]||[]).length}</span></div>
+    ${(byCol[k]||[]).slice(0,14).map(t=>`<div style="padding:6px 0;border-bottom:1px solid rgba(33,38,45,.5)">
+      <div style="font-size:12px">${esc(String(t.title||'').slice(0,44))}</div>
+      <div style="font-size:10px;color:var(--muted)">${esc(t.assignee||'')}${t.upd?' · '+esc(t.upd):''}</div></div>`).join('')||'<div class="empty">—</div>'}
+    </div>`).join('')}</div>`;
+}
+
+function render(s){
+  const allUp = s.summary.agents_up>=s.summary.agents_total-1 && s.summary.containers_up===s.summary.containers_total;
+  $('#overall').innerHTML=`<span class="dot ${allUp?'g':'a'}"></span> ${allUp?'Всё работает':'Внимание'}`;
+  $('#ts').textContent='обновлено: '+s.ts;
+  $('#app').innerHTML=`
+  ${cards(s)}
+  <h2 style="display:flex;justify-content:space-between;align-items:center">🚀 Проекты AI-команды
+    <button class="btn" style="font-size:11px;padding:5px 11px" onclick="newProject()">+ Новый проект</button></h2>
+  ${projectCards(s)}
+  <h2 style="display:flex;justify-content:space-between;align-items:center">🏭 Контент-завод (продажи)
+    <button class="btn" style="font-size:11px;padding:5px 11px" onclick="newContent()">+ Создать контент</button></h2>
+  ${contentPanel(s)}
+  <h2>🗂 Доска задач команды</h2>
+  ${kanban(s)}
+  <div class="grid two" style="margin-top:14px">
+    <div class="panel"><h2 style="margin-top:0">📋 Отчёты / Лента</h2>
+      ${tbl([['agent','Агент'],['kind','Тип'],['title','Заголовок'],['ts','Когда']],s.reports,{kind:k=>`<span class="tag">${esc(k)}</span>`,title:t=>esc(String(t||'').slice(0,60))})}</div>
+    <div><h2 style="margin-top:0">🏢 Команда (иерархия)</h2>${teamTree(s)}</div>
+  </div>
+  <h2>Агенты (${s.agents.length})</h2>
+  ${agentCards(s)}
+  <div class="grid two" style="margin-top:6px">
+    <div class="panel"><h2 style="margin-top:0">💸 LLM-расходы по агентам</h2>
+      ${tbl([['agent','Агент'],['calls','Вызовов'],['tokens','Токенов'],['cost','₽'],['last','Послед.']],s.usage)}</div>
+    <div class="panel"><h2 style="margin-top:0">⚙️ Инфра-прогоны</h2>
+      ${tbl([['kind','Задача'],['status','Статус'],['ts','Когда']],s.runs,{status:stFmt})}</div>
+  </div>
+  <div class="grid three" style="margin-top:14px">
+    <div class="panel"><h2 style="margin-top:0">🐳 Контейнеры</h2>
+      ${Object.entries(s.containers).map(([k,v])=>`<div class="kv"><span class="k mono">${esc(k)}</span><span class="v ${v?'ok':'no'}">${v?'up':'down'}</span></div>`).join('')}</div>
+    <div class="panel"><h2 style="margin-top:0">💓 Heartbeats</h2>
+      ${tbl([['component','Компонент'],['status','St'],['seen','Посл.']],s.heartbeats,{status:stFmt})}</div>
+    <div class="panel"><h2 style="margin-top:0">🔵 Qdrant</h2>
+      ${(s.qdrant||[]).map(c=>`<div class="kv"><span class="k mono">${esc(c)}</span><span class="v">●</span></div>`).join('')||'<div class="empty">—</div>'}</div>
+  </div>
+  <h2>Базы данных</h2>
+  <div class="grid three">
+    ${Object.entries(s.dbs).map(([db,t])=>`<div class="panel db"><h4>${esc(db)}</h4>
+      ${Object.entries(t).map(([k,v])=>`<div class="kv"><span class="k">${esc(k)}</span><span class="v">${v==null?'—':v}</span></div>`).join('')}</div>`).join('')}
+  </div>
+  ${(s.tier1&&s.tier1.length)?`<h2>🧠 Tier-1 сессии (ручные Claude/GPT)</h2><div class="panel">${tbl([['task_type','Тип'],['status','Статус'],['at','Когда']],s.tier1,{status:stFmt})}</div>`:''}
+  `;
+}
+async function refresh(){try{const r=await fetch('/api/state');lastState=await r.json();render(lastState);}catch(e){$('#overall').innerHTML=`<span class="dot r"></span> ошибка: ${esc(e.message)}`;}}
+
+function openAgent(key){
+  const a=((lastState&&lastState.agents)||[]).find(x=>x.key===key); if(!a)return;
+  const choices=(lastState.model_choices||[]); const cap=(lastState.summary||{}).paid_cap||'';
+  $('#modalBody').innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="margin:0;font-size:17px">${esc(a.name)}</h2>
+      <span style="cursor:pointer;color:var(--muted);font-size:20px" onclick="closeAgent()">✕</span></div>
+    <div class="ag-meta" style="margin-bottom:12px;gap:8px"><span class="tag ${a.contour}">${esc(a.contour)}</span><span class="st ${a.status}">${esc(a.status)}</span><span>${esc(a.schedule)}</span></div>
+    <div class="kv"><span class="k">pid</span><span class="v">${a.pid||'—'}</span></div>
+    <div class="kv"><span class="k">LLM-вызовов</span><span class="v">${a.calls||0}</span></div>
+    <div class="kv"><span class="k">посл. активность</span><span class="v">${esc(a.last_call||'—')}</span></div>
+    <div style="margin:16px 0 6px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:1px">⚙ Настройки агента</div>
+    <label style="font-size:12px;color:var(--muted)">Модель</label>
+    <select id="mdl" style="width:100%;margin:5px 0 3px;padding:9px;background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:8px;font-family:ui-monospace,monospace;font-size:12px">
+      ${choices.map(c=>`<option value="${esc(c)}" ${c===a.model?'selected':''}>${esc(c)}</option>`).join('')}</select>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${a.model_overridden?'✎ переопределено вручную':'дефолт роутинга'}</div>
+    <button class="btn" id="saveMdl" style="width:100%" onclick="saveModel(${JSON.stringify(a.key)})">💾 Сохранить модель</button>
+    <div style="margin:16px 0 6px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Глобально</div>
+    <label style="font-size:12px;color:var(--muted)">Лимит платного API, ₽/мес</label>
+    <div style="display:flex;gap:8px;margin-top:5px">
+      <input id="cap" type="number" value="${esc(cap)}" style="flex:1;padding:9px;background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:8px">
+      <button class="btn" id="saveCap" onclick="saveBudget()">💾</button></div>
+    <div style="margin-top:12px;font-size:11px;color:var(--muted)">Применяется к следующему запуску агента (кэш router ~30с).</div>`;
+  $('#modal').style.display='flex';
+}
+function closeAgent(){$('#modal').style.display='none';}
+async function saveModel(key){
+  const model=$('#mdl').value, b=$('#saveMdl'); b.textContent='Сохраняю…';
+  try{await fetch('/api/agent/model',{method:'POST',body:JSON.stringify({key,model})});b.textContent='✓ Сохранено';await refresh();setTimeout(closeAgent,700);}
+  catch(e){b.textContent='Ошибка';}
+}
+async function saveBudget(){
+  const cap=parseInt($('#cap').value,10), b=$('#saveCap'); b.textContent='…';
+  try{await fetch('/api/budget',{method:'POST',body:JSON.stringify({cap})});b.textContent='✓';await refresh();}
+  catch(e){b.textContent='✕';}
+}
+function loop(){clearTimeout(timer);if($('#auto').checked)timer=setTimeout(async()=>{await refresh();loop();},7000);}
+$('#auto').addEventListener('change',loop);
+refresh().then(loop);
+</script>
+</body>
+</html>

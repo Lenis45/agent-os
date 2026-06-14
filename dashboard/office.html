@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amori · Agent Office</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0e14; --tile1:#121826; --tile2:#0e1420; --wall:#1a2335;
+    --green:#56D364; --cyan:#79C0FF; --amber:#F2A93B; --red:#FF7B72; --purple:#D2A8FF;
+    --fg:#e6edf7; --muted:#8b97ad; --crt:#0c1f14;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:var(--bg);
+    background-image:
+      linear-gradient(rgba(255,255,255,.015) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.015) 1px,transparent 1px);
+    background-size:32px 32px;
+    color:var(--fg); font-family:'Press Start 2P',ui-monospace,monospace;
+    font-size:10px; line-height:1.8; padding-bottom:40px; image-rendering:pixelated;
+    -webkit-font-smoothing:none;
+  }
+  /* scanlines */
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+    background:repeating-linear-gradient(transparent 0 2px,rgba(0,0,0,.12) 2px 3px)}
+  .bar{position:sticky;top:0;z-index:50;background:#0a0e14ee;border-bottom:3px solid var(--wall);
+    padding:14px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .title{font-size:14px;color:var(--amber);text-shadow:2px 2px 0 #000}
+  .title b{color:var(--cyan)}
+  .badge{font-size:8px;padding:6px 9px;border:2px solid var(--wall);background:#0e1420}
+  .badge .on{color:var(--green)} .badge .off{color:var(--red)}
+  .spacer{flex:1}
+  a.link{font-size:8px;color:var(--muted);text-decoration:none;border:2px solid var(--wall);padding:6px 9px}
+  a.link:hover{color:var(--fg);border-color:var(--cyan)}
+  .floor{max-width:1380px;margin:18px auto;padding:0 18px}
+  .wing-label{font-size:9px;color:var(--muted);margin:26px 0 12px;letter-spacing:1px}
+  .wing-label.personal{color:var(--green)} .wing-label.customer{color:var(--cyan)} .wing-label.ops{color:var(--amber)}
+  .room{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+  /* desk / workstation */
+  .desk{position:relative;background:var(--wall);border:3px solid #0a0e14;
+    box-shadow:inset -3px -3px 0 #0a0e1480, inset 3px 3px 0 #ffffff14;
+    padding:14px 12px 10px;min-height:170px;display:flex;flex-direction:column;align-items:center}
+  .desk.personal{border-top:3px solid var(--green)}
+  .desk.customer{border-top:3px solid var(--cyan)}
+  .desk.ops{border-top:3px solid var(--amber)}
+  .led{position:absolute;top:8px;right:9px;width:9px;height:9px;border:2px solid #000}
+  .led.g{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .led.r{background:var(--red);box-shadow:0 0 8px var(--red);animation:blink .6s steps(1) infinite}
+  .led.a{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .led.gray{background:#3a4255}
+  .char{font-size:42px;line-height:1;filter:drop-shadow(2px 2px 0 #000);margin:6px 0 2px}
+  .char.idle{animation:bob 2.4s ease-in-out infinite}
+  .char.working{animation:work .5s ease-in-out infinite}
+  .char.waiting{animation:bob 4s ease-in-out infinite;opacity:.85}
+  .char.standby{opacity:.7}
+  .char.down{filter:grayscale(1) drop-shadow(2px 2px 0 #000);animation:alert .25s steps(2) infinite}
+  .tool{position:absolute;top:46px;left:50%;font-size:16px;animation:float 3s ease-in-out infinite;opacity:.9}
+  .crt{width:54px;height:34px;background:var(--crt);border:3px solid #060d09;margin-top:4px;position:relative;overflow:hidden}
+  .crt::before{content:"";position:absolute;inset:3px;background:
+    repeating-linear-gradient(transparent 0 3px,#00ff4112 3px 4px)}
+  .crt.active::after{content:">_";position:absolute;left:4px;top:3px;color:#7CFFB0;font-size:9px;animation:type 1s steps(2) infinite}
+  .crt.off{opacity:.4}
+  .name{font-size:8px;margin-top:9px;text-align:center;color:var(--fg)}
+  .role{font-size:7px;color:var(--muted);margin-top:4px;text-align:center}
+  .meta{font-size:7px;color:var(--muted);margin-top:6px;text-align:center;line-height:1.7}
+  .meta b{color:var(--cyan)}
+  /* speech bubble */
+  .bubble{position:absolute;top:-14px;left:50%;transform:translateX(-50%);
+    background:#0e1420;border:2px solid var(--wall);padding:5px 7px;font-size:7px;color:var(--fg);
+    white-space:nowrap;opacity:0;transition:opacity .3s;pointer-events:none;z-index:5}
+  .desk:hover .bubble{opacity:1}
+  .pop{position:absolute;top:50px;left:50%;transform:translateX(-50%);color:var(--amber);
+    font-size:9px;opacity:0;pointer-events:none}
+  .pop.go{animation:pop 1.1s ease-out}
+  /* ops mini-cards */
+  .opsrow{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .srv{background:var(--wall);border:3px solid #0a0e14;box-shadow:inset 3px 3px 0 #ffffff10;padding:12px;text-align:center}
+  .srv .ico{font-size:30px;filter:drop-shadow(2px 2px 0 #000)}
+  .srv .lab{font-size:8px;margin-top:8px}
+  .srv .val{font-size:7px;color:var(--muted);margin-top:5px;line-height:1.7}
+  .srv .val b{color:var(--green)}
+  /* animations */
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+  @keyframes work{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-3px) rotate(2deg)}}
+  @keyframes alert{0%{transform:translateX(-2px)}100%{transform:translateX(2px)}}
+  @keyframes blink{0%{opacity:1}50%{opacity:.2}}
+  @keyframes float{0%,100%{transform:translate(-50%,0)}50%{transform:translate(-50%,-6px)}}
+  @keyframes type{0%{opacity:1}50%{opacity:.2}}
+  @keyframes pop{0%{opacity:0;transform:translate(-50%,0)}30%{opacity:1}100%{opacity:0;transform:translate(-50%,-34px)}}
+  .loading{text-align:center;color:var(--muted);padding:70px;font-size:11px}
+  .zzz{position:absolute;top:30px;left:62%;font-size:11px;color:var(--muted);animation:float 2.5s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="title">🏢 AMORI · <b>AGENT OFFICE</b></span>
+  <span class="badge" id="ov">…</span>
+  <div class="spacer"></div>
+  <span class="badge" id="clock"></span>
+  <a class="link" href="/">📊 DASHBOARD</a>
+</div>
+<div class="floor" id="floor"><div class="loading">⌛ Загрузка офиса…</div></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const CHARS={
+  orchestrator:{face:'👩‍💼',tool:'🧠',role:'Менеджер · Emilia'},
+  chief_of_staff:{face:'🧑‍💼',tool:'📋',role:'Chief of Staff'},
+  email_watchdog:{face:'🧑‍🦰',tool:'📧',role:'Почтовый фильтр'},
+  knowledge_curator:{face:'🧑‍🏫',tool:'📚',role:'Архивариус'},
+  task_sync:{face:'🧑‍💻',tool:'📊',role:'Задачи/KPI'},
+  calendar_agent:{face:'🧑‍🎓',tool:'📅',role:'Календарь'},
+  support_agent:{face:'🧑‍🔧',tool:'🎧',role:'Поддержка'},
+  lead_manager:{face:'🤵',tool:'🤝',role:'Лиды/CRM'},
+  email_agent:{face:'🧑‍🎤',tool:'✉️',role:'Письма лидам'},
+};
+const ST={running:'working',scheduled:'waiting',cron:'waiting','on-demand':'standby',loaded:'idle',down:'down'};
+let prevCalls={}, timer=null;
+
+function mood(a){return ST[a.status]||'idle';}
+function led(a){const m=mood(a);return m==='down'?'r':(m==='working'||m==='idle')?'g':(m==='standby')?'gray':'a';}
+
+function desk(a){
+  const c=CHARS[a.key]||{face:'🧑',tool:'⚙️',role:''};
+  const m=mood(a);
+  const active=(m==='working');
+  const bub=`статус: ${esc(a.status)}${a.last_call?' · посл: '+esc(a.last_call):''}`;
+  return `<div class="desk ${a.contour}" data-key="${a.key}">
+    <span class="led ${led(a)}"></span>
+    <span class="bubble">${bub}</span>
+    <span class="pop" id="pop-${a.key}">✦ +1</span>
+    ${m==='waiting'?'<span class="zzz">z</span>':''}
+    <span class="char ${m}">${c.face}</span>
+    <div class="crt ${active?'active':(m==='down'?'off':'')}"></div>
+    <div class="name">${esc(a.name)}</div>
+    <div class="role">${esc(c.role)}</div>
+    <div class="meta">${esc(a.schedule)}<br>вызовов: <b>${a.calls||0}</b></div>
+  </div>`;
+}
+
+function srv(ico,lab,val,cls){return `<div class="srv"><div class="ico">${ico}</div><div class="lab">${esc(lab)}</div><div class="val">${val}</div></div>`;}
+
+function projPulse(s){
+  const ps=s.projects||[]; const act=ps.filter(p=>p.status!=='done').length;
+  const lines=ps.slice(0,3).map(p=>`${esc(String(p.name).slice(0,13))}: <b>${p.done}/${p.total}</b>`).join('<br>')||'—';
+  return `активных: <b>${act}</b><br>${lines}`;
+}
+function contPulse(s){
+  const c=s.content||[]; const pend=c.filter(x=>x.status==='pending').length; const pub=c.filter(x=>x.status==='published').length;
+  return `на аппрув: <b>${pend}</b><br>опубликовано: <b>${pub}</b>`;
+}
+function taskPulse(s){
+  const t=s.tasks||[]; const run=t.filter(x=>x.status==='running'||x.status==='claimed').length;
+  const q=t.filter(x=>x.status==='queued').length; const d=t.filter(x=>x.status==='done').length;
+  return `в работе: <b>${run}</b><br>очередь: <b>${q}</b><br>готово: <b>${d}</b>`;
+}
+function reportsTicker(s){
+  const r=(s.reports||[]).slice(0,7);
+  return r.map(x=>`<div style="font-size:7px;color:var(--muted);padding:3px 0;border-bottom:1px solid #1a2335">▸ <b style="color:var(--cyan)">${esc(x.agent)}</b> ${esc(String(x.title||'').slice(0,40))}</div>`).join('')||'<span style="color:var(--muted)">пока тихо…</span>';
+}
+
+function render(s){
+  const allok=s.summary.agents_up>=s.summary.agents_total-1 && s.summary.containers_up===s.summary.containers_total;
+  $('#ov').innerHTML=allok?'<span class="on">● ВСЁ РАБОТАЕТ</span>':'<span class="off">● ВНИМАНИЕ</span>';
+  $('#clock').textContent=s.ts.slice(11);
+  const byKey=Object.fromEntries(s.agents.map(a=>[a.key,a]));
+  const personal=s.agents.filter(a=>a.contour==='personal');
+  const customer=s.agents.filter(a=>a.contour==='customer');
+  // backup/monitor heartbeats
+  const hb=Object.fromEntries((s.heartbeats||[]).map(h=>[h.component,h]));
+  const cont=s.containers||{};
+  const dbs=s.dbs||{};
+  const lastRun=k=>{const r=(s.runs||[]).find(x=>x.kind===k);return r?`${r.status} · ${r.ts}`:'—';};
+
+  $('#floor').innerHTML=`
+    <div class="wing-label personal">▸ ЛИЧНОЕ КРЫЛО (personal)</div>
+    <div class="room">${personal.map(desk).join('')}</div>
+    <div class="wing-label customer">▸ КЛИЕНТСКОЕ КРЫЛО (customer · 152-ФЗ)</div>
+    <div class="room">${customer.map(desk).join('')}</div>
+    <div class="wing-label ops">▸ ШТАБ ПРОЕКТОВ И КОНТЕНТА (AI-команда)</div>
+    <div class="opsrow">
+      ${srv('🚀','ПРОЕКТЫ', projPulse(s),'')}
+      ${srv('🏭','КОНТЕНТ-ЗАВОД', contPulse(s),'')}
+      ${srv('🗂️','ЗАДАЧИ КОМАНДЫ', taskPulse(s),'')}
+    </div>
+    <div class="wing-label ops">▸ ЛЕНТА ОТЧЁТОВ КОМАНДЫ</div>
+    <div class="srv" style="text-align:left;padding:14px 16px">${reportsTicker(s)}</div>
+    <div class="wing-label ops">▸ СЕРВЕРНАЯ / ОПЕРАЦИОНКА</div>
+    <div class="opsrow">
+      ${srv('🤖💾','BACKUP-BOT', 'посл: '+esc(lastRun('backup'))+'<br>'+(hb.backup?'hb '+esc(hb.backup.status):''), 'ops')}
+      ${srv('📹','MONITOR', 'посл: '+esc(lastRun('monitor')), 'ops')}
+      ${srv('🧪','RESTORE-TEST', esc(lastRun('restore_test')), 'ops')}
+      ${srv('🗄️','PG agents', Object.entries(dbs.agents||{}).map(([k,v])=>`${k}: <b>${v}</b>`).join('<br>'),'')}
+      ${srv('🔒','PG customer_db', Object.entries(dbs.customer_db||{}).map(([k,v])=>`${k}: <b>${v}</b>`).join('<br>'),'')}
+      ${srv('📈','ops_db', Object.entries(dbs.ops_db||{}).map(([k,v])=>`${k}: <b>${v}</b>`).join('<br>'),'')}
+      ${srv('🧊','Qdrant', (s.qdrant||[]).join('<br>')||'—','')}
+      ${srv('🐳','Контейнеры', Object.entries(cont).map(([k,v])=>`${k.replace('ai_','')}: ${v?'<b>up</b>':'<span style=color:#FF7B72>down</span>'}`).join('<br>'),'')}
+    </div>
+    <div class="wing-label" style="text-align:center;color:#6b7689">↑ наведи на стол — увидишь статус · обновление каждые 5с</div>
+  `;
+  // «работа!» pop при росте числа вызовов
+  s.agents.forEach(a=>{
+    if(prevCalls[a.key]!=null && a.calls>prevCalls[a.key]){
+      const el=$('#pop-'+a.key); if(el){el.classList.remove('go');void el.offsetWidth;el.classList.add('go');}
+    }
+    prevCalls[a.key]=a.calls;
+  });
+}
+async function refresh(){try{const r=await fetch('/api/state');render(await r.json());}catch(e){$('#ov').innerHTML='<span class="off">● ОШИБКА</span>';}}
+function loop(){clearTimeout(timer);timer=setTimeout(async()=>{await refresh();loop();},5000);}
+refresh().then(loop);
+</script>
+</body>
+</html>

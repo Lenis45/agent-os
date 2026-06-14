@@ -1,0 +1,649 @@
+{
+  "name": "Amori · Agent Map",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "⏰_schedule_launchd/cron",
+      "name": "⏰ Schedule (launchd/cron)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "💬_telegram",
+      "name": "💬 Telegram",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        320
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📧_imap_3_ящика",
+      "name": "📧 IMAP (3 ящика)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        520
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🖐_manual_/_on-demand",
+      "name": "🖐 Manual / on-demand",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        720
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🧠_orchestrator_emilia",
+      "name": "🧠 orchestrator (Emilia)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        40
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📊_chief_of_staff",
+      "name": "📊 chief_of_staff",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📧_email_watchdog",
+      "name": "📧 email_watchdog",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📚_knowledge_curator",
+      "name": "📚 knowledge_curator",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        520
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🗂_task_sync",
+      "name": "🗂 task_sync",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        680
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📅_calendar_agent",
+      "name": "📅 calendar_agent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        840
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "❤️_health_check",
+      "name": "❤️ health_check",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        1000
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📝_context_builder",
+      "name": "📝 context_builder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        1160
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📇_lead_manager",
+      "name": "📇 lead_manager",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        1380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "✉️_email_agent",
+      "name": "✉️ email_agent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        1540
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🆘_support_agent",
+      "name": "🆘 support_agent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        460,
+        1700
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🚦_router.py",
+      "name": "🚦 router.py",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        940,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "⚡_groq_/_🦙_ollama",
+      "name": "⚡ Groq / 🦙 Ollama",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        940,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🛡_cost_guard_new_v3.0",
+      "name": "🛡 cost_guard (NEW v3.0)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        940,
+        520
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🗄_pg__agents",
+      "name": "🗄 PG · agents",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🗄_pg__ops_db_new",
+      "name": "🗄 PG · ops_db (NEW)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        280
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🔵_qdrant",
+      "name": "🔵 Qdrant",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        440
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "⚡_redis",
+      "name": "⚡ Redis",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        600
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📓_obsidian_vault",
+      "name": "📓 Obsidian vault",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        760
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "📈_langfuse",
+      "name": "📈 Langfuse",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        980
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "🔍_tier1_sessions_new",
+      "name": "🔍 tier1_sessions (NEW)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        1140
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⏱ ТРИГГЕРЫ\nИсточники задач: launchd/cron по расписанию, Telegram (боты), IMAP (почта), ручные/on-demand вызовы.",
+        "height": 760,
+        "width": 360,
+        "color": 4
+      },
+      "id": "sticky_triggers",
+      "name": "note_triggers",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🏠 LAYER 1 · PERSONAL OS\nЛичные агенты CEO. Emilia (orchestrator) — центральный ассистент с памятью и инструментами. Остальные — узкие single-responsibility задачи.",
+        "height": 1380,
+        "width": 380,
+        "color": 5
+      },
+      "id": "sticky_personal",
+      "name": "note_personal",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        420,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 💼 LAYER 2 · BUSINESS\nCRM лидов, рассылки, поддержка. В v3.0 эти данные (ПДн клиентов РФ) выносятся в отдельный customer-контур на РФ VPS.",
+        "height": 520,
+        "width": 380,
+        "color": 3
+      },
+      "id": "sticky_business",
+      "name": "note_business",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        420,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🚦 LAYER 5 · MODEL ROUTING\nrouter.py → Groq (free) / Ollama (local). cost_guard (NEW v3.0) пишет КАЖДЫЙ вызов в ops_db.llm_usage и режет платный API при превышении месячного лимита.",
+        "height": 520,
+        "width": 360,
+        "color": 6
+      },
+      "id": "sticky_router",
+      "name": "note_router",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        900,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🗄 LAYER 6 · DATA & MEMORY\nPG agents (факты, делится с Langfuse), PG ops_db (NEW — учёт+Tier-1), Qdrant (смысл), Redis (скорость), Obsidian (знания).",
+        "height": 820,
+        "width": 360,
+        "color": 4
+      },
+      "id": "sticky_stores",
+      "name": "note_stores",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📈 LAYER 7 · OBSERVABILITY\nLangfuse трейсит API-вызовы. tier1_sessions (NEW v3.0) логирует ручные Claude/GPT сессии — раньше Tier-1 был «слепым».",
+        "height": 420,
+        "width": 360,
+        "color": 7
+      },
+      "id": "sticky_obs",
+      "name": "note_obs",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        900
+      ]
+    }
+  ],
+  "connections": {
+    "⏰ Schedule (launchd/cron)": {
+      "main": [
+        [
+          {
+            "node": "📊 chief_of_staff",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🗂 task_sync",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📅 calendar_agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "❤️ health_check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📇 lead_manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 IMAP (3 ящика)": {
+      "main": [
+        [
+          {
+            "node": "📧 email_watchdog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Telegram": {
+      "main": [
+        [
+          {
+            "node": "🧠 orchestrator (Emilia)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📊 chief_of_staff",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🆘 support_agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🖐 Manual / on-demand": {
+      "main": [
+        [
+          {
+            "node": "📝 context_builder",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "✉️ email_agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 orchestrator (Emilia)": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔵 Qdrant",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "⚡ Redis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📈 Langfuse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 chief_of_staff": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📚 knowledge_curator": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📓 Obsidian vault",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔵 Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🗂 task_sync": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🆘 support_agent": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔵 Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 context_builder": {
+      "main": [
+        [
+          {
+            "node": "🚦 router.py",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔍 tier1_sessions (NEW)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🚦 router.py": {
+      "main": [
+        [
+          {
+            "node": "⚡ Groq / 🦙 Ollama",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🛡 cost_guard (NEW v3.0)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🛡 cost_guard (NEW v3.0)": {
+      "main": [
+        [
+          {
+            "node": "🗄 PG · ops_db (NEW)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📇 lead_manager": {
+      "main": [
+        [
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "✉️ email_agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✉️ email_agent": {
+      "main": [
+        [
+          {
+            "node": "🗄 PG · agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 email_watchdog": {
+      "main": [
+        [
+          {
+            "node": "📓 Obsidian vault",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "id": "amoriagentmap01"
+}

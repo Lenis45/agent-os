@@ -1,0 +1,100 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai_qdrant
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai_postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: agents
+      POSTGRES_USER: agent_user
+      POSTGRES_PASSWORD: Sbyjc8wreznzGWBertLmYe8U3fYRD245
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agents"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: ai_langfuse
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://agent_user:Sbyjc8wreznzGWBertLmYe8U3fYRD245@postgres:5432/agents
+      NEXTAUTH_SECRET: ns2KwEpqZzFjiWSR/3by5jaRFq14roPv1s8mwai9vfw=
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: EuznHFtgBYGscew+bfE9nA==
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ai_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_SECURE_COOKIE: "false"
+      N8N_ENCRYPTION_KEY: WqM12jVDX0tcgBrfOvppEAK2V/oovjp0
+      GENERIC_TIMEZONE: Europe/Moscow
+      TZ: Europe/Moscow
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: agent_user
+      DB_POSTGRESDB_PASSWORD: Sbyjc8wreznzGWBertLmYe8U3fYRD245
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  redis_data:
+  qdrant_data:
+  postgres_data:
+  n8n_data:
