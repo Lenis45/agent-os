@@ -1,4 +1,5 @@
 """Smoke-импорт всех агентов + регресс-стражи против уже исправленных проблем."""
+import os
 import pathlib
 import importlib
 import pytest
@@ -30,6 +31,19 @@ def test_no_local_send_telegram(name):
 def test_no_hardcoded_pg_password(name):
     """Пароль PG не должен быть захардкожен в исходнике."""
     assert "Sbyjc8wreznzGWBertLmYe8U3fYRD245" not in _src(name), f"{name}: хардкод PG-пароля"
+
+
+def test_no_leaked_pg_password_anywhere():
+    """Утёкший PG-пароль не должен встречаться НИГДЕ (ops_store.py и dashboard тоже —
+    раньше guard их не проверял, и пароль утёк в публичный agent-os)."""
+    import glob
+    leaked = "Sbyjc8wreznzGWBertLmYe8U3fYRD245"
+    agents_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    patterns = [os.path.join(agents_dir, "*.py"),
+                os.path.join(agents_dir, "..", "dashboard", "server.py")]
+    offenders = [os.path.relpath(f) for pat in patterns for f in glob.glob(pat)
+                 if leaked in open(f, encoding="utf-8", errors="ignore").read()]
+    assert not offenders, f"утёкший PG-пароль найден в: {offenders}"
 
 
 @pytest.mark.parametrize("name", AGENTS)

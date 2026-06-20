@@ -13,14 +13,18 @@ import os
 import psycopg2
 from dotenv import load_dotenv
 
-load_dotenv()
+# Грузим именно agents/.env (а не из CWD процесса) — иначе при импорте из другого
+# каталога пароль не подхватывался и срабатывал хардкод-фолбэк (утечка).
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # Тот же инстанс/креды что и у остальных агентов, но отдельная БД ops_db.
 DB_HOST = os.getenv("OPS_DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("OPS_DB_PORT", "5432"))
 DB_NAME = os.getenv("OPS_DB_NAME", "ops_db")
 DB_USER = os.getenv("OPS_DB_USER", "agent_user")
-DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "Sbyjc8wreznzGWBertLmYe8U3fYRD245")
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+if not DB_PASSWORD:
+    raise RuntimeError("POSTGRES_PASSWORD не задан в окружении — проверь ~/ai-infra/agents/.env")
 
 
 def get_conn():

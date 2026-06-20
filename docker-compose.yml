@@ -39,7 +39,7 @@ services:
     environment:
       POSTGRES_DB: agents
       POSTGRES_USER: agent_user
-      POSTGRES_PASSWORD: Sbyjc8wreznzGWBertLmYe8U3fYRD245
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ai-infra/.env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -58,7 +58,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://agent_user:Sbyjc8wreznzGWBertLmYe8U3fYRD245@postgres:5432/agents
+      DATABASE_URL: postgresql://agent_user:${POSTGRES_PASSWORD}@postgres:5432/agents
       NEXTAUTH_SECRET: ns2KwEpqZzFjiWSR/3by5jaRFq14roPv1s8mwai9vfw=
       NEXTAUTH_URL: http://localhost:3000
       SALT: EuznHFtgBYGscew+bfE9nA==
@@ -89,7 +89,7 @@ services:
       DB_POSTGRESDB_PORT: "5432"
       DB_POSTGRESDB_DATABASE: n8n
       DB_POSTGRESDB_USER: agent_user
-      DB_POSTGRESDB_PASSWORD: Sbyjc8wreznzGWBertLmYe8U3fYRD245
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - n8n_data:/home/node/.n8n
 

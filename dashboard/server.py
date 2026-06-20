@@ -65,7 +65,9 @@ def sh(args, timeout=8):
 PG_HOST = os.environ.get("OPS_DB_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("OPS_DB_PORT", "5432"))
 PG_USER = os.environ.get("OPS_DB_USER", "agent_user")
-PG_PASS = os.environ.get("POSTGRES_PASSWORD", "Sbyjc8wreznzGWBertLmYe8U3fYRD245")
+PG_PASS = os.environ.get("POSTGRES_PASSWORD")  # из agents/.env (load_dotenv выше); без хардкода
+if not PG_PASS:
+    raise RuntimeError("POSTGRES_PASSWORD не задан — проверь ~/ai-infra/agents/.env")
 
 _pools = {}
 _pools_lock = threading.Lock()
