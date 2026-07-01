@@ -95,7 +95,26 @@ async def run():
             if agreements:
                 past_context += f"[{date} {period_d}] Договорённости: {', '.join(agreements[:2])}\n"
 
-    # Формируем текст
+    # ── Статистика по переписке (детерминированная, до LLM) ──
+    from collections import Counter
+    chat_latest = {}
+    for m in messages:  # collect_messages идёт newest-first внутри чата → первое вхождение = свежее
+        chat_latest.setdefault(m["chat"], m)
+    incoming = sum(1 for m in messages if not m["is_me"])
+    outgoing = len(messages) - incoming
+    waiting_chats = [c for c, m in chat_latest.items() if not m["is_me"]]
+    busiest = Counter(m["chat"] for m in messages).most_common(3)
+
+    stats_block = (
+        f"📊 {len(messages)} сообщений · {len(chat_latest)} чатов · "
+        f"входящих {incoming} / исходящих {outgoing}\n"
+    )
+    if waiting_chats:
+        stats_block += f"⏳ Ждут ответа ({len(waiting_chats)}): {', '.join(waiting_chats[:6])}\n"
+    if busiest:
+        stats_block += "🔥 Активные: " + " · ".join(f"{c} ({n})" for c, n in busiest) + "\n"
+
+    # Формируем текст переписок
     text = ""
     for m in messages:
         who = "Денис" if m["is_me"] else m["sender"]
@@ -104,30 +123,31 @@ async def run():
     prompt = f"""Проанализируй переписки Дениса за последние 12 часов.
 {past_context}
 
+СТАТИСТИКА (уже посчитана, используй как опору):
+{stats_block}
+Чаты, где последнее сообщение НЕ от Дениса (вероятно ждут ответа): {', '.join(waiting_chats) or 'нет'}
+
 ПЕРЕПИСКИ:
 {text}
 
-Составь {period} дайджест:
+Составь {period} дайджест. Будь конкретным, называй имена и чаты, указывай время где важно.
+Для каждого пункта в «ТРЕБУЕТ ОТВЕТА» добавь [чат, во сколько] и одной строкой суть.
 
-🔴 ТРЕБУЕТ ОТВЕТА
-(люди которые ждут — самое важное)
+🔴 ТРЕБУЕТ ОТВЕТА — приоритезируй: сверху те, кто ждёт дольше/важнее. Формат: «Имя (чат, ЧЧ:ММ) — суть».
 
-📋 ЗАДАЧИ НА СЕГОДНЯ
-(конкретные действия)
+📋 ЗАДАЧИ НА СЕГОДНЯ — конкретные действия с ответственными.
 
-🔁 ПОВТОРНЫЕ / ЗАВИСШИЕ
-(задачи которые уже были в прошлых дайджестах и до сих пор не закрыты)
+🔁 ПОВТОРНЫЕ / ЗАВИСШИЕ — было в прошлых дайджестах и до сих пор не закрыто.
 
-🤝 ДОГОВОРЁННОСТИ
-(кто что пообещал — с именами)
+🤝 ДОГОВОРЁННОСТИ — кто что пообещал, кому, к какому сроку.
 
-⏰ ДЕДЛАЙНЫ
+⏰ ДЕДЛАЙНЫ — с датами/временем.
 
-❓ НЕЗАКРЫТЫЕ ВОПРОСЫ
+❓ НЕЗАКРЫТЫЕ ВОПРОСЫ — где разговор оборвался без ответа.
 
-💡 НА ЗАМЕТКУ
+💡 НА ЗАМЕТКУ — важный контекст, риски, настроение/тон если значимо.
 
-Будь конкретным. Называй имена."""
+Не выдумывай. Если раздел пуст — напиши «— нет»."""
 
     result = llm.run(make_agent(), prompt, "chief_of_staff")
     result_str = str(result)
@@ -141,7 +161,8 @@ async def run():
             safe(remember, msg["text"], "meeting", "telegram", "chief_of_staff",
                  {"chat": msg["chat"], "sender": msg["sender"]}, label="remember", logger=log)
 
-    header = f"Chief of Staff | {period.upper()} ДАЙДЖЕСТ\n{now_str} | {len(messages)} сообщений\n\n"
+    header = (f"📋 Chief of Staff | {period.upper()} ДАЙДЖЕСТ\n{now_str}\n\n"
+              f"{stats_block}\n")
     notify.send(header + result_str)
     log.info("Готово")
 

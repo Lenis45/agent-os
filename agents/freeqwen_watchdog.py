@@ -21,6 +21,7 @@ import time
 import json
 import subprocess
 import urllib.request
+import urllib.error
 from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,14 @@ HEALTH_URL = "http://127.0.0.1:3264/api/health"
 COOLDOWN_FILE = "/tmp/freeqwen_watchdog_cooldown"
 COOLDOWN_MIN = 10
 STALE_MIN = 12
+# Анти-бот probe: /health бывает ok, а реальные completions Qwen блокирует анти-ботом.
+# Шлём крошечный реальный запрос не чаще раза в PROBE_INTERVAL_MIN (бережём лимит),
+# при анти-боте — уведомляем о ре-авторизации (не спамим, раз в ANTIBOT_NOTIFY_COOLDOWN_MIN).
+CHAT_URL = "http://127.0.0.1:3264/api/chat/completions"
+PROBE_INTERVAL_MIN = 30
+PROBE_TS_FILE = "/tmp/freeqwen_probe_ts"
+ANTIBOT_NOTIFY_COOLDOWN_MIN = 180
+ANTIBOT_NOTIFY_FILE = "/tmp/freeqwen_antibot_notified"
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 SUCCESS = "Ответ получен успешно"
 ERRORS = ("ProtocolError", "Runtime.callFunctionOn timed out", "Ошибка при отправке")
@@ -112,6 +121,51 @@ def _restart(reason: str):
         pass
 
 
+def _rate_ok(path: str, minutes: int) -> bool:
+    """True если с последней отметки в path прошло >= minutes (и обновляет отметку).
+    False если ещё рано (отметку не трогаем)."""
+    try:
+        if (time.time() - os.path.getmtime(path)) < minutes * 60:
+            return False
+    except Exception:
+        pass
+    try:
+        with open(path, "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+    return True
+
+
+def _probe_antibot() -> str:
+    """Реальный мини-запрос к Qwen (не чаще PROBE_INTERVAL_MIN).
+    'ok' | 'antibot' | 'error' | 'skip' (ещё не время)."""
+    if not _rate_ok(PROBE_TS_FILE, PROBE_INTERVAL_MIN):
+        return "skip"
+    body = json.dumps({
+        "model": os.getenv("DEFAULT_MODEL", "qwen3.7-max"),
+        "messages": [{"role": "user", "content": "1"}],
+        "stream": False, "max_tokens": 4,
+    }).encode()
+    req = urllib.request.Request(CHAT_URL, data=body, headers={
+        "Content-Type": "application/json", "Authorization": "Bearer dummy"})
+    try:
+        with urllib.request.urlopen(req, timeout=50) as r:
+            data = json.loads(r.read().decode())
+        err = (data.get("error") or {}).get("message", "") if isinstance(data, dict) else ""
+        if "anti-bot" in err.lower():
+            return "antibot"
+        return "ok" if data.get("choices") else ("error" if err else "ok")
+    except urllib.error.HTTPError as e:
+        try:
+            txt = e.read().decode()[:300]
+        except Exception:
+            txt = ""
+        return "antibot" if "anti-bot" in txt.lower() else "error"
+    except Exception:
+        return "error"
+
+
 def main():
     age = _proc_age_sec()
     if age is not None and age < 90:
@@ -131,6 +185,22 @@ def main():
         status = "hung_cooldown"
     else:
         status = "ok"
+        # /health ok — но проверим, что реальные ответы не блокирует анти-бот
+        probe = _probe_antibot()
+        if probe == "antibot":
+            # Qwen выключен намеренно (мозг на DeepSeek) — фиксируем статус, НЕ уведомляем.
+            status = "antibot"
+        elif probe == "error" and not _in_cooldown():
+            # реальный запрос упал не из-за анти-бота (краш/таймаут браузера:
+            # TargetCloseError, ProtocolError) — это лечится рестартом
+            _restart("probe error (browser crash)")
+            status = "restarted"
+        elif probe == "ok":
+            # снова живой — сбросим флаг уведомления
+            try:
+                os.remove(ANTIBOT_NOTIFY_FILE)
+            except OSError:
+                pass
     try:
         ops_store.heartbeat("freeqwen", "ok" if status == "ok" else "warn",
                             {"action": status, "health": health})

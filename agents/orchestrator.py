@@ -189,23 +189,152 @@ def tool_make_content(brief: str) -> str:
     return (f"🏭 Контент #{cid} готов и ждёт аппрува в дашборде :8099 "
             f"(раздел «Контент-завод»). Одобришь — опубликую.")
 
+# Статичные знания о проекте — чтобы «мозг» реально понимал контекст Amori.
+PROJECT_BRIEF = """О ПРОЕКТЕ AMORI:
+Amori — стартап умных GPS-ошейников для домашних животных (собаки, кошки). Денис Колесников — основатель/CEO.
+Три направления: «Ошейники» (железо/прошивка), «Приложение» (мобайл + бэкенд), «Шоп/Сайт» (e-commerce/лендинг).
+Есть AI-команда автоматизации (этот бот — её мозг): агенты ведут лидов (WEEEK CRM), почту, дайджесты переписок,
+календарь, контент-завод для продаж, очередь задач, бэкапы. Данные клиентов — в отдельной БД (152-ФЗ)."""
+
+
+def _last_digest_raw() -> str:
+    """Последний сырой дайджест Chief of Staff (для контекста ответов)."""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT raw_output, digest_date, period FROM chief_digests "
+                    "ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row and row[0]:
+            return f"ПОСЛЕДНИЙ ДАЙДЖЕСТ ({row[1]} {row[2]}):\n{row[0][:1200]}"
+    except Exception:
+        pass
+    return ""
+
+
+def build_context(user_message: str) -> str:
+    """Богатый контекст для мозга: команда + бриф + семантическая память + дайджест."""
+    parts = [PROJECT_BRIEF, get_team_prompt()]
+    try:
+        from memory import recall
+        hits = recall(user_message, limit=4)
+        if hits:
+            parts.append("РЕЛЕВАНТНОЕ ИЗ ПАМЯТИ:")
+            parts += [f"  - {h['content'][:200]}" for h in hits]
+    except Exception:
+        pass
+    dig = _last_digest_raw()
+    if dig:
+        parts.append(dig)
+    return "\n\n".join(parts)
+
+
 def tool_direct_answer(question: str, history: list) -> str:
-    agent = llm.build_agent(
-        "orchestrator",
-        name="Assistant",
-        role="Персональный ассистент CEO стартапа Amori",
-        goal=f"""Ты персональный AI-ассистент Дениса Колесникова — CEO Amori (умные ошейники).
-{get_team_prompt()}
-Отвечай по-русски, конкретно и по делу. Контекст разговора учитывай.""",
-        llm="groq/llama-3.3-70b-versatile",
-    )
-    context = "\n".join([f"{m['role']}: {m['content']}" for m in history[-5:]])
-    return str(llm.run(agent, f"История:\n{context}\n\nВопрос: {question}", "orchestrator"))
+    """Содержательный ответ «мозга» на Qwen (qwen3.7-max) с богатым контекстом проекта.
+    Groq — авто-фолбэк внутри llm.qwen_answer, чтобы бот никогда не молчал."""
+    system = f"""Ты — персональный AI-ассистент и «второй мозг» Дениса Колесникова, CEO стартапа Amori.
+{build_context(question)}
+
+Правила: отвечай по-русски, конкретно и по делу, с опорой на контекст проекта и команду.
+Если не хватает данных — скажи чего именно и предложи, что проверить. Не выдумывай факты."""
+    context = "\n".join([f"{m['role']}: {m['content']}" for m in history[-6:]])
+    prompt = f"История разговора:\n{context}\n\nВопрос Дениса: {question}"
+    return str(llm.qwen_answer(prompt, system=system, agent_key="orchestrator"))
+
+
+def extract_text_from_file(path: str, max_chars: int = 12000) -> str:
+    """Извлечь текст из документа (pdf/docx/xlsx/txt/код). None — формат не поддержан."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(path)
+            return "\n".join((pg.extract_text() or "") for pg in reader.pages)[:max_chars]
+        if ext == ".docx":
+            import docx
+            d = docx.Document(path)
+            return "\n".join(p.text for p in d.paragraphs if p.text)[:max_chars]
+        if ext in (".xlsx", ".xlsm"):
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f"# Лист: {ws.title}")
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        out.append("\t".join(cells))
+            return "\n".join(out)[:max_chars]
+        if ext in (".txt", ".md", ".csv", ".json", ".log", ".py", ".js", ".ts", ".html", ".yaml", ".yml"):
+            return open(path, encoding="utf-8", errors="ignore").read()[:max_chars]
+    except Exception as e:
+        return f"[не удалось извлечь текст: {e}]"
+    return None
+
+
+def tool_check_agents() -> str:
+    """Реальное состояние AI-инфры: пульс агентов, последние прогоны, очередь, активность LLM."""
+    import ops_store
+    lines = ["🤖 СОСТОЯНИЕ AI-КОМАНДЫ\n"]
+    try:
+        conn = ops_store.get_conn(); cur = conn.cursor()
+    except Exception as e:
+        return f"⚠️ Не могу подключиться к ops_db: {e}"
+    # Пульс (heartbeats)
+    try:
+        cur.execute("""SELECT component, status, EXTRACT(EPOCH FROM (now()-last_seen))/60
+                       FROM infra_heartbeats ORDER BY last_seen DESC""")
+        rows = cur.fetchall()
+        if rows:
+            lines.append("━━━ ПУЛЬС ━━━")
+            for comp, st, age_min in rows:
+                age_min = float(age_min or 0)
+                icon = "🟢" if (st == "ok" and age_min < 180) else ("🟡" if st in ("ok", "warn") else "🔴")
+                age = f"{int(age_min)}м" if age_min < 120 else f"{int(age_min // 60)}ч"
+                lines.append(f"{icon} {comp}: {st} · {age} назад")
+    except Exception:
+        conn.rollback()
+    # Последние прогоны мониторинга/бэкапа
+    try:
+        cur.execute("""SELECT DISTINCT ON (kind) kind, status, ts::timestamp(0)
+                       FROM infra_runs ORDER BY kind, ts DESC""")
+        runs = cur.fetchall()
+        if runs:
+            lines.append("\n━━━ ПОСЛЕДНИЕ ПРОГОНЫ ━━━")
+            for kind, st, ts in runs:
+                icon = "🟢" if st == "ok" else ("🟡" if st in ("warn", "partial") else "🔴")
+                lines.append(f"{icon} {kind}: {st} ({ts})")
+    except Exception:
+        conn.rollback()
+    # Активность LLM за 24ч
+    try:
+        cur.execute("""SELECT agent, count(*), max(ts)::timestamp(0) FROM llm_usage
+                       WHERE ts > now()-interval '24 hours' GROUP BY agent ORDER BY max(ts) DESC""")
+        usage = cur.fetchall()
+        if usage:
+            lines.append("\n━━━ АКТИВНОСТЬ ЗА 24Ч ━━━")
+            for agent, cnt, last in usage:
+                lines.append(f"  {agent}: {cnt} вызов(ов), посл. {last}")
+        else:
+            lines.append("\n⚠️ За 24ч активности LLM нет.")
+    except Exception:
+        conn.rollback()
+    # Очередь задач
+    try:
+        cur.execute("SELECT status, count(*) FROM tasks GROUP BY status")
+        q = dict(cur.fetchall())
+        if q:
+            lines.append("\n━━━ ОЧЕРЕДЬ ЗАДАЧ ━━━")
+            lines.append("  " + " · ".join(f"{k}: {v}" for k, v in q.items()))
+    except Exception:
+        conn.rollback()
+    conn.close()
+    return "\n".join(lines)
 
 # ===== ORCHESTRATOR =====
 
 TOOLS_DESCRIPTION = """
 Доступные инструменты:
+- check_agents: состояние AI-команды/инфры — пульс агентов, прогоны, очередь, активность (params: нет). Используй на «проверь агентов», «работают ли боты», «статус системы».
 - translate: перевести задачу для команды (params: task)
 - check_tasks: проверить задачи в WEEEK и Taiga (params: нет)
 - check_calendar: проверить и синхронизировать календарь (params: нет)
@@ -222,11 +351,19 @@ TOOLS_DESCRIPTION = """
 - make_content: контент-завод для продаж — сгенерировать пост/письмо/креатив/лендинг и положить на аппрув (params: brief с описанием нужного контента)
 """
 
+# Подтверждение требуется ТОЛЬКО для исходящих/необратимых действий (отправка писем,
+# рассылка, запуск проекта команды, удаление из команды). Чтения и анализ — сразу,
+# без лишних «ответь ДА/НЕТ» (это бесило в старой версии). Политика жёсткая, на сервере,
+# а не на доверии к LLM.
+CONFIRM_TOOLS = {"send_email_lead", "send_bulk_emails", "update_team", "new_project"}
+
 def orchestrate(message: str, history: list) -> dict:
     """Определяем намерение и инструмент"""
     history_text = "\n".join([f"{m['role']}: {m['content'][:200]}" for m in history[-8:]])
 
-    prompt = f"""Ты оркестратор для AI-ассистента CEO стартапа.
+    prompt = f"""Ты — маршрутизатор намерений для AI-ассистента CEO стартапа Amori.
+Твоя задача: выбрать ОДИН инструмент и его параметры. Не отвечай по существу сам —
+для содержательного ответа есть инструмент answer (его обрабатывает мощная модель).
 
 {TOOLS_DESCRIPTION}
 
@@ -235,17 +372,17 @@ def orchestrate(message: str, history: list) -> dict:
 
 Новое сообщение: {message}
 
-Определи намерение и верни JSON:
+Верни ТОЛЬКО JSON:
 {{
   "tool": "название инструмента",
   "params": {{}},
-  "needs_confirmation": true/false,
-  "confirmation_text": "Что именно ты собираешься сделать (если нужно подтверждение)",
-  "response_if_answer": "Ответ если tool=answer"
+  "confirmation_text": "одной фразой что именно будет сделано (для исходящих действий)"
 }}
 
-needs_confirmation=true для: translate, update_team, check_tasks, check_calendar
-needs_confirmation=false для: save_note, answer"""
+Подсказки по выбору:
+- «проверь агентов/ботов», «всё работает?», «статус системы» → check_agents
+- вопрос/просьба объяснить/совет/анализ без явного действия → answer (params: {{"question": "..."}})
+- отправить письмо лиду → send_email_lead; запустить проект команде → new_project."""
 
     result = llm.groq_chat(
         groq_client, "orchestrator",
@@ -276,7 +413,9 @@ needs_confirmation=false для: save_note, answer"""
         }
 
 def execute_tool(tool: str, params: dict, history: list) -> str:
-    if tool == "translate":
+    if tool == "check_agents":
+        return tool_check_agents()
+    elif tool == "translate":
         return tool_translate(params.get("task", ""))
     elif tool == "check_tasks":
         return tool_check_tasks()
@@ -297,8 +436,15 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
         from email_agent import send_to_lead
         lid = int(params.get("lead_id", 0))
         etype = params.get("email_type", "intro")
-        result = send_to_lead(lid, etype)
-        return "✅ Письмо отправлено" if result else "❌ Ошибка отправки"
+        try:
+            result = send_to_lead(lid, etype)
+        except Exception as e:
+            import traceback; log.error(traceback.format_exc())
+            return f"❌ Не отправил письмо лиду {lid}: {str(e)[:300]}"
+        if result:
+            return f"✅ Письмо ({etype}) отправлено лиду {lid}"
+        return (f"❌ Письмо лиду {lid} не отправлено. Вероятные причины: у лида нет email, "
+                f"не настроен SMTP, или письмо уже отправлялось. Проверь: get_leads.")
     elif tool == "update_lead":
         lid = int(params.get("lead_id", 0))
         field = params.get("field", "")
@@ -377,6 +523,84 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Не смог распознать: {e}")
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Фото → анализ через Qwen-vision (qwen3-vl-plus)."""
+    user_id = str(update.message.from_user.id)
+    if user_id != os.getenv("TELEGRAM_MY_ID"):
+        return
+    caption = (update.message.caption or "").strip()
+    question = caption or "Что на этом изображении? Проанализируй детально в контексте проекта Amori."
+    await update.message.reply_text("🖼 Анализирую изображение...")
+    path = None
+    try:
+        photo = update.message.photo[-1]  # самое крупное
+        file = await context.bot.get_file(photo.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            await file.download_to_drive(tmp.name)
+            path = tmp.name
+        loop = asyncio.get_event_loop()
+        prompt = question + "\n\nОтвечай по-русски, конкретно."
+        result = await loop.run_in_executor(_executor, lambda: llm.vision_analyze(prompt, [path]))
+        if not str(result).strip():
+            result = "Не смог проанализировать изображение (vision-модель недоступна, попробуй позже)."
+        save_message(user_id, "user", f"[фото] {caption}")
+        save_message(user_id, "assistant", str(result), "vision")
+        send_msg(str(result), str(update.effective_chat.id))
+    except Exception as e:
+        import traceback; log.error(traceback.format_exc())
+        send_msg(f"⚠️ Ошибка анализа фото: {str(e)[:200]}", str(update.effective_chat.id))
+    finally:
+        if path:
+            try: os.unlink(path)
+            except OSError: pass
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Документ → извлечь текст и проанализировать Qwen. Картинку-документ → vision."""
+    user_id = str(update.message.from_user.id)
+    if user_id != os.getenv("TELEGRAM_MY_ID"):
+        return
+    doc = update.message.document
+    caption = (update.message.caption or "").strip()
+    fname = doc.file_name or "файл"
+    ext = os.path.splitext(fname)[1].lower()
+    await update.message.reply_text(f"📄 Читаю «{fname}»...")
+    path = None
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        with tempfile.NamedTemporaryFile(suffix=ext or ".bin", delete=False) as tmp:
+            await file.download_to_drive(tmp.name)
+            path = tmp.name
+        loop = asyncio.get_event_loop()
+        # Картинка, присланная как документ → vision
+        if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+            q = (caption or "Проанализируй это изображение в контексте Amori.") + "\nОтвечай по-русски."
+            result = await loop.run_in_executor(_executor, lambda: llm.vision_analyze(q, [path]))
+        else:
+            content = await loop.run_in_executor(_executor, lambda: extract_text_from_file(path))
+            if content is None:
+                send_msg(f"⚠️ Формат {ext or '?'} пока не поддержан для анализа. "
+                         f"Поддерживаю: pdf, docx, xlsx, txt/md/csv/код, картинки.",
+                         str(update.effective_chat.id))
+                return
+            task = caption or "Кратко суммируй документ, выдели ключевое и предложи действия по проекту Amori."
+            system = (f"Ты — аналитик-ассистент Дениса (CEO Amori).\n{PROJECT_BRIEF}\n"
+                      "Анализируй документ по делу, по-русски, структурно.")
+            prompt = f"Задача: {task}\n\nСОДЕРЖИМОЕ ДОКУМЕНТА «{fname}»:\n{content}"
+            result = await loop.run_in_executor(
+                _executor, lambda: llm.qwen_answer(prompt, system=system, agent_key="orchestrator", max_tokens=2000))
+        if not str(result).strip():
+            result = "Не смог обработать документ (модель недоступна, попробуй позже)."
+        save_message(user_id, "user", f"[документ {fname}] {caption}")
+        save_message(user_id, "assistant", str(result), "document")
+        send_msg(str(result), str(update.effective_chat.id))
+    except Exception as e:
+        import traceback; log.error(traceback.format_exc())
+        send_msg(f"⚠️ Ошибка обработки документа: {str(e)[:200]}", str(update.effective_chat.id))
+    finally:
+        if path:
+            try: os.unlink(path)
+            except OSError: pass
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     if user_id != os.getenv("TELEGRAM_MY_ID"):
@@ -420,7 +644,9 @@ async def process_message(update: Update, context, text: str, user_id: str):
         decision = await loop.run_in_executor(_executor, lambda: orchestrate(text, history))
         tool = decision.get("tool", "answer")
         params = decision.get("params", {})
-        needs_confirmation = decision.get("needs_confirmation", False)
+        # Политика подтверждений — серверная, не на доверии к LLM:
+        # подтверждаем только исходящие/необратимые действия.
+        needs_confirmation = tool in CONFIRM_TOOLS
 
         if tool == "answer":
             response = await loop.run_in_executor(_executor, lambda: tool_direct_answer(text, history))
@@ -507,13 +733,15 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
-    log.info("AI Orchestrator запущен")
-    log.info("Поддержка: текст, голос, история разговора, подтверждение действий")
+    log.info("AI Orchestrator запущен (мозг: OpenModel/DeepSeek V4 Flash, fallback Groq; vision qwen3-vl-plus)")
+    log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
     app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).build()
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))
     app.add_handler(CommandHandler("tickets", handle_tickets))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(drop_pending_updates=True)
 

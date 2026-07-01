@@ -53,3 +53,12 @@ backups/restore_test.sh
 .idea/
 .vscode/
 *.swp
+
+# ── Third-party proxy clones (свой upstream + содержат токены) ──
+FreeGLMKimiAPI/
+**/auth.json
+**/session/tokens.json
+**/session/accounts/
+
+# Коммерческий продукт-спек (не публиковать в agent-os)
+docs/productization/
