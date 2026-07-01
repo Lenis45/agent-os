@@ -115,10 +115,7 @@ def _restart(reason: str):
     except Exception:
         pass
     print(f"[freeqwen_watchdog] RESTART: {reason}")
-    try:
-        notify.send(f"🔄 FreeQwenApi перезапущен (Hermes/Qwen завис): {reason}", level="warn")
-    except Exception:
-        pass
+    # Qwen выключен намеренно — рестарт молча, без Telegram-алерта.
 
 
 def _rate_ok(path: str, minutes: int) -> bool:
@@ -184,23 +181,9 @@ def main():
     elif hung:
         status = "hung_cooldown"
     else:
+        # Qwen выключен намеренно (мозг на DeepSeek): completions-probe и рестарты на
+        # краше браузера отключены (лишний шум). Остаётся только health-based рестарт выше.
         status = "ok"
-        # /health ok — но проверим, что реальные ответы не блокирует анти-бот
-        probe = _probe_antibot()
-        if probe == "antibot":
-            # Qwen выключен намеренно (мозг на DeepSeek) — фиксируем статус, НЕ уведомляем.
-            status = "antibot"
-        elif probe == "error" and not _in_cooldown():
-            # реальный запрос упал не из-за анти-бота (краш/таймаут браузера:
-            # TargetCloseError, ProtocolError) — это лечится рестартом
-            _restart("probe error (browser crash)")
-            status = "restarted"
-        elif probe == "ok":
-            # снова живой — сбросим флаг уведомления
-            try:
-                os.remove(ANTIBOT_NOTIFY_FILE)
-            except OSError:
-                pass
     try:
         ops_store.heartbeat("freeqwen", "ok" if status == "ok" else "warn",
                             {"action": status, "health": health})

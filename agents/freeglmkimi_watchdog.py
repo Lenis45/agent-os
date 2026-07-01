@@ -67,10 +67,7 @@ def _restart(reason: str):
     except Exception:
         pass
     print(f"[freeglmkimi_watchdog] RESTART: {reason}")
-    try:
-        notify.send(f"🔄 FreeGLMKimiAPI перезапущен (Hermes/GLM-Kimi): {reason}", level="warn")
-    except Exception:
-        pass
+    # GLM/Kimi выключены намеренно — рестарт молча, без Telegram-алерта.
 
 
 def main():
