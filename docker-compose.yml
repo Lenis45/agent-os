@@ -59,9 +59,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://agent_user:${POSTGRES_PASSWORD}@postgres:5432/agents
-      NEXTAUTH_SECRET: ns2KwEpqZzFjiWSR/3by5jaRFq14roPv1s8mwai9vfw=
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in ai-infra/.env}
       NEXTAUTH_URL: http://localhost:3000
-      SALT: EuznHFtgBYGscew+bfE9nA==
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in ai-infra/.env}
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
 
@@ -79,7 +79,7 @@ services:
       N8N_PORT: "5678"
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
-      N8N_ENCRYPTION_KEY: WqM12jVDX0tcgBrfOvppEAK2V/oovjp0
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in ai-infra/.env}
       GENERIC_TIMEZONE: Europe/Moscow
       TZ: Europe/Moscow
       N8N_DIAGNOSTICS_ENABLED: "false"

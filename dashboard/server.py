@@ -8,8 +8,9 @@ ops_db.llm_usage, Tier-1 сессии, прогоны backup/monitor/restore_tes
 
 Запуск: /opt/anaconda3/bin/python3 ~/ai-infra/dashboard/server.py  → http://localhost:8099
 """
-import json, subprocess, urllib.request, os, time, threading, concurrent.futures
+import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 import datetime
 from decimal import Decimal
@@ -32,6 +33,9 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("INFRA_DASH_PORT", "8099"))
+BIND = os.environ.get("INFRA_DASH_BIND", "127.0.0.1")   # localhost по умолчанию; наружу — только через reverse-proxy
+DASH_TOKEN = os.environ.get("DASH_TOKEN", "")            # если задан — требуется для мутирующих POST
+ALLOW_ORIGIN = os.environ.get("INFRA_DASH_ORIGIN", f"http://localhost:{PORT}")
 PG = "ai_postgres"
 DOCKER = os.environ.get("DOCKER_BIN", "/usr/local/bin/docker")
 
@@ -320,9 +324,25 @@ def _db_summary():
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def _authed(self):
+        # DASH_TOKEN не задан → полагаемся на bind 127.0.0.1 (INFRA_DASH_BIND).
+        # Задан → мутирующие POST требуют совпадения токена (заголовок или ?t=).
+        if not DASH_TOKEN:
+            return True
+        got = (self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+               or self.headers.get("X-Auth-Token", "").strip()
+               or parse_qs(urlparse(self.path).query).get("t", [""])[0])
+        return hmac.compare_digest(got, DASH_TOKEN)
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token")
+        self.send_header("Vary", "Origin"); self.end_headers()
     def _send(self, code, body, ctype="application/json"):
         self.send_response(code); self.send_header("Content-Type", ctype)
-        self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        self.send_header("Vary", "Origin"); self.end_headers()
         self.wfile.write(body.encode() if isinstance(body, str) else body)
     def do_GET(self):
         path = self.path.split("?", 1)[0]  # отрезаем query (?t=... ломал роут '/')
@@ -346,6 +366,8 @@ class H(BaseHTTPRequestHandler):
             self._send(404, "not found")
 
     def do_POST(self):
+        if not self._authed():
+            return self._send(401, json.dumps({"error": "unauthorized"}))
         try:
             ln = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(ln) or b"{}")
@@ -417,5 +439,7 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"Amori Infra Ops → http://localhost:{PORT}")
-    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+    if BIND not in ("127.0.0.1", "localhost", "::1") and not DASH_TOKEN:
+        print("⚠️  Dashboard bound to a non-localhost address without DASH_TOKEN — mutating endpoints are UNPROTECTED.")
+    print(f"Amori Infra Ops → http://{BIND}:{PORT}  (auth: {'on' if DASH_TOKEN else 'off — localhost-only'})")
+    ThreadingHTTPServer((BIND, PORT), H).serve_forever()

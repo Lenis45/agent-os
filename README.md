@@ -187,8 +187,7 @@ cd agent-os
 docker compose up -d
 
 # 2. Python deps (anaconda recommended)
-pip install litellm praisonai psycopg2-binary python-dotenv groq \
-            python-telegram-bot qdrant-client tenacity
+pip install -r requirements.txt
 
 # 3. MCP server deps
 cd mcp && python -m venv .venv && .venv/bin/pip install "mcp[cli]" psycopg2-binary python-dotenv
@@ -200,7 +199,7 @@ cp agents/.env.example agents/.env   # add your Groq key, Telegram token, etc.
 cd agents && python ops_store.py
 
 # 6. Run tests
-python -m pytest tests/ -q           # expect 72 tests passing
+python -m pytest tests/ -q           # full suite; exact count: pytest tests/ --co -q | tail -1
 
 # 7. Load launchd jobs (macOS)
 # See docs/RUNBOOK.md for launchctl commands
@@ -213,7 +212,7 @@ python -m pytest tests/ -q           # expect 72 tests passing
 ```bash
 cd ~/ai-infra/agents
 python -m pytest tests/ -q
-# 72 tests: shared libs (parse_json, cost_guard, DB round-trips) +
+# Suite covers: shared libs (parse_json, cost_guard, DB round-trips) +
 #           agent smoke imports + regression guards (no hardcoded PG pw, no Langfuse(), correct DB contours)
 ```
 
