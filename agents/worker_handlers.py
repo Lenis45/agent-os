@@ -14,6 +14,7 @@ worker_handlers — специализированные хендлеры вор
 """
 import llm
 import base_agent
+import ponytail
 
 AMORI = "стартап Amori — умные GPS-ошейники для домашних животных, рынок РФ/СНГ"
 
@@ -70,7 +71,8 @@ def web_researcher(task):
 def dev_worker(task):
     a = _agent(
         "dev_worker", "Senior-разработчик Amori (Go бэкенд, Kotlin мобайл)",
-        "Ты решаешь код-задачи: даёшь конкретный код/диф, объяснение, тесты и edge-cases.")
+        ponytail.apply(
+            "Ты решаешь код-задачи: даёшь конкретный код/диф, объяснение, тесты и edge-cases."))
     p = (f"{_task_text(task)}\n\nВерни в markdown: 1) разбор, 2) код/решение в код-блоках, "
          "3) тесты, 4) edge-cases.")
     return str(llm.run(a, p, "dev_worker"))
