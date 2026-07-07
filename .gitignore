@@ -47,7 +47,7 @@ Thumbs.db
 backups/local/
 backups/*.sql.gz
 backups/*.tar.gz
-backups/restore_test.sh
+!backups/restore_test.sh
 
 # ── Editor ────────────────────────────────────────────────────────────────────
 .idea/
