@@ -20,6 +20,24 @@ import router
 import cost_guard
 from retry import net_retry
 
+
+DEFAULT_GROQ_MODEL = os.getenv("DEFAULT_GROQ_MODEL", "openai/gpt-oss-120b")
+DEFAULT_GROQ_LITELLM_MODEL = f"groq/{DEFAULT_GROQ_MODEL}"
+DEPRECATED_GROQ_MODELS = {
+    "llama-3.3-70b-versatile",
+    "groq/llama-3.3-70b-versatile",
+}
+
+
+def normalize_groq_model(model: str, litellm: bool = False) -> str:
+    """Return a supported Groq model, replacing models scheduled for shutdown."""
+    value = (model or "").strip()
+    if not value:
+        return DEFAULT_GROQ_LITELLM_MODEL if litellm else DEFAULT_GROQ_MODEL
+    if value.lower() in DEPRECATED_GROQ_MODELS:
+        return DEFAULT_GROQ_LITELLM_MODEL if litellm or value.startswith("groq/") else DEFAULT_GROQ_MODEL
+    return value
+
 def count_tokens(model: str, text: str) -> int:
     """Быстрая оценка числа токенов (эвристика ~len/4). Без сети — litellm.token_counter
     тянет токенайзер по сети и виснет на таймауте, поэтому не используем его."""
@@ -40,7 +58,7 @@ def _record(agent_key: str, model: str, prompt: str, result, source: str = "agen
         pass
 
 
-GROQ_FALLBACK = os.getenv("FREE_FALLBACK_MODEL", "groq/llama-3.3-70b-versatile")
+GROQ_FALLBACK = normalize_groq_model(os.getenv("FREE_FALLBACK_MODEL", DEFAULT_GROQ_LITELLM_MODEL), litellm=True)
 # Реестр параметров сборки агента → чтобы пересобрать на Groq при пустом ответе.
 _AGENT_BUILD = {}
 
@@ -117,8 +135,9 @@ def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
     return result
 
 
-def groq_chat(client, agent_key: str, messages, model: str = "llama-3.3-70b-versatile", **kwargs):
+def groq_chat(client, agent_key: str, messages, model: str = DEFAULT_GROQ_MODEL, **kwargs):
     """Прямой вызов Groq SDK с ретраем и учётом usage (для orchestrator)."""
+    model = normalize_groq_model(model, litellm=False)
 
     @net_retry(attempts=2)
     def _go():
@@ -133,6 +152,30 @@ def groq_chat(client, agent_key: str, messages, model: str = "llama-3.3-70b-vers
     except Exception:
         pass
     return resp
+
+
+UNSUPPORTED_AMORI_PATTERNS = {
+    "real-time location": re.compile(r"\b(real[- ]?time|реальн\w*\s+врем\w*)\b", re.I),
+    "exact location/accuracy": re.compile(r"\b(точн\w*\s+(местополож|геолокац|координат|gps)|точност\w*)\b", re.I),
+    "safe-zone alerts": re.compile(r"\b(уведомлен\w*|оповещен\w*|безопасн\w*\s+зон\w*|гео[- ]?зон\w*)\b", re.I),
+    "health/activity monitoring": re.compile(r"\b(здоровь\w*|активност\w*|пульс\w*|сон\w*|мониторинг\w*)\b", re.I),
+    "available app": re.compile(r"\b(приложени\w*\s+(уже\s+)?(доступн|работа\w*|скача\w*)|ios\s+и\s+android\s+доступн)\b", re.I),
+    "absolute guarantee": re.compile(r"\b(гарантир\w*|никогда\s+не\s+потеря\w*|всегда\s+(зна\w*|под\s+контрол\w*))\b", re.I),
+}
+
+
+def unsupported_product_claims(text: str) -> list[str]:
+    """Detect claims Amori agents must not make without verified product data."""
+    s = str(text or "")
+    return [label for label, pattern in UNSUPPORTED_AMORI_PATTERNS.items() if pattern.search(s)]
+
+
+def ensure_safe_amori_output(text: str, agent_key: str = "agent") -> str:
+    """Fail closed when generated Amori copy invents product capabilities."""
+    claims = unsupported_product_claims(text)
+    if claims:
+        raise ValueError(f"{agent_key}: неподтверждённые claims: {', '.join(claims)}")
+    return str(text or "")
 
 
 def _freeqwen_chat(messages, model: str, max_tokens: int = 1500,
@@ -278,4 +321,4 @@ def parse_json(text: str, default=None):
 if __name__ == "__main__":
     print("[llm] router model for chief_of_staff:", router.get_model("chief_of_staff"))
     print("[llm] parse_json test:", parse_json('```json\n{"ok": true}\n```'))
-    print("[llm] token estimate:", count_tokens("groq/llama-3.3-70b-versatile", "hello world " * 10))
+    print("[llm] token estimate:", count_tokens(DEFAULT_GROQ_LITELLM_MODEL, "hello world " * 10))

@@ -71,6 +71,8 @@ if not PG_PASS:
 
 _pools = {}
 _pools_lock = threading.Lock()
+_state_cache = {"ts": 0.0, "body": None}
+_state_cache_lock = threading.Lock()
 
 
 def _pool(dbname):
@@ -82,7 +84,7 @@ def _pool(dbname):
         if p is None:
             try:
                 p = pgpool.ThreadedConnectionPool(
-                    1, 10, host=PG_HOST, port=PG_PORT, dbname=dbname,
+                    1, 20, host=PG_HOST, port=PG_PORT, dbname=dbname,
                     user=PG_USER, password=PG_PASS, connect_timeout=5,
                     options="-c statement_timeout=8000",  # запрос не висит дольше 8с
                 )
@@ -149,22 +151,23 @@ def psql_exec(dbname, query, params=None, timeout=8):
 
 # Дефолтные модели роутинга (зеркало router.ROUTING) — для отображения + выбора в UI.
 ROUTING_DEFAULT = {
-    "orchestrator": "groq/llama-3.3-70b-versatile",
-    "chief_of_staff": "groq/llama-3.3-70b-versatile",
-    "email_watchdog": "groq/llama-3.3-70b-versatile",
-    "knowledge_curator": "groq/llama-3.3-70b-versatile",
+    "orchestrator": "groq/openai/gpt-oss-120b",
+    "chief_of_staff": "groq/openai/gpt-oss-120b",
+    "email_watchdog": "groq/openai/gpt-oss-120b",
+    "knowledge_curator": "groq/openai/gpt-oss-120b",
     "task_sync": "ollama/gpt-oss:20b",
-    "calendar_agent": "groq/llama-3.3-70b-versatile",
-    "support_agent": "groq/llama-3.3-70b-versatile",
-    "lead_manager": "groq/llama-3.3-70b-versatile",
-    "email_agent": "groq/llama-3.3-70b-versatile",
+    "calendar_agent": "groq/openai/gpt-oss-120b",
+    "support_agent": "groq/openai/gpt-oss-120b",
+    "lead_manager": "groq/openai/gpt-oss-120b",
+    "email_agent": "groq/openai/gpt-oss-120b",
 }
 MODEL_CHOICES = [
     # Порядок = по качеству (то, что агенты реально могут вызвать через litellm).
     # «Топ» Claude/Codex — ручной уровень (нет API-ключей), здесь не выбирается.
     "qwen-free/qwen3.7-max",         # Qwen (FreeQwenApi :3264) — лучший общий, free
     "qwen-free/qwen3-coder-plus",    # Qwen — для кода, free
-    "groq/llama-3.3-70b-versatile",  # Groq — быстрый дефолт, free
+    "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
+    "groq/qwen/qwen3-32b",            # Groq — быстрый Qwen fallback, free/dev tier
     "gemini/gemini-2.0-flash",       # Gemini — есть ключ, free tier
     "ollama/gpt-oss:20b",            # локально (ПК с Ollama)
     "ollama/qwen2.5-coder:7b",       # локально — код
@@ -274,7 +277,10 @@ def build_state():
     overrides = {r["agent_key"]: r["model"] for r in
                  psql_json("ops_db", "SELECT agent_key, model FROM agent_config WHERE model IS NOT NULL AND model<>''")}
     for a in agents:
-        a["model"] = overrides.get(a["key"]) or ROUTING_DEFAULT.get(a["key"], "groq/llama-3.3-70b-versatile")
+        model = overrides.get(a["key"]) or ROUTING_DEFAULT.get(a["key"], "groq/openai/gpt-oss-120b")
+        if model == "groq/llama-3.3-70b-versatile":
+            model = "groq/openai/gpt-oss-120b"
+        a["model"] = model
         a["model_overridden"] = a["key"] in overrides
     up = sum(1 for a in agents if a["status"] in ("running", "scheduled", "cron"))
     return {
@@ -292,6 +298,18 @@ def build_state():
         "content": f_content.result(),
         "model_choices": MODEL_CHOICES,
     }
+
+
+def cached_state(ttl=2.0):
+    now = time.time()
+    with _state_cache_lock:
+        if _state_cache["body"] is not None and now - _state_cache["ts"] < ttl:
+            return _state_cache["body"]
+    body = build_state()
+    with _state_cache_lock:
+        _state_cache["ts"] = time.time()
+        _state_cache["body"] = body
+    return body
 
 
 def _qdrant():
@@ -327,7 +345,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]  # отрезаем query (?t=... ломал роут '/')
         if path.startswith("/api/state"):
-            try: self._send(200, json.dumps(build_state()))
+            try: self._send(200, json.dumps(cached_state()))
             except Exception as e: self._send(500, json.dumps({"error": str(e)}))
         elif path == "/" or path.startswith("/index"):
             self._serve_html("index.html")

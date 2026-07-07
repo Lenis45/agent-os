@@ -387,7 +387,7 @@ def orchestrate(message: str, history: list) -> dict:
     result = llm.groq_chat(
         groq_client, "orchestrator",
         [{"role": "user", "content": prompt}],
-        model="llama-3.3-70b-versatile", temperature=0.1, max_tokens=500,
+        model=llm.DEFAULT_GROQ_MODEL, temperature=0.1, max_tokens=500,
     )
 
     text = result.choices[0].message.content.strip()

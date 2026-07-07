@@ -18,12 +18,12 @@ Every agent imports from the same four files. No copy-pasting, no divergence.
 
 ```python
 ROUTING = {
-    "chief_of_staff":    "groq/llama-3.3-70b-versatile",  # needs speed
-    "email_watchdog":    "groq/llama-3.3-70b-versatile",
+    "chief_of_staff":    "groq/openai/gpt-oss-120b",      # needs speed
+    "email_watchdog":    "groq/openai/gpt-oss-120b",
     "task_sync":         "ollama/gpt-oss:20b",             # local — stays private
     "research_agent":    "ollama/gpt-oss:20b",             # heavy analysis — local
     "code_agent":        "ollama/qwen2.5-coder:7b",        # code — local
-    # default:           "groq/llama-3.3-70b-versatile"
+    # default:           "groq/openai/gpt-oss-120b"
 }
 ```
 
@@ -101,7 +101,7 @@ publish → Telegram channel (if TELEGRAM_CHANNEL_ID set) or saved as "ready"
 ## Cost guard (`cost_guard.py`)
 
 Monthly budget cap per agent. When `paid_api_spend_rub >= monthly_paid_cap_rub`:
-- `guard_model(model, agent)` replaces paid models with `groq/llama-3.3-70b-versatile`
+- `guard_model(model, agent)` replaces paid models with `groq/openai/gpt-oss-120b`
 - Free/local models: no-op
 
 ## Tests

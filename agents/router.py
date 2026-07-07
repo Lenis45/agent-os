@@ -25,14 +25,18 @@ def _model_overrides() -> dict:
         _override["ts"] = now
     return _override["models"]
 
+DEFAULT_GROQ_LITELLM_MODEL = os.getenv("FREE_FALLBACK_MODEL", "groq/openai/gpt-oss-120b")
+if DEFAULT_GROQ_LITELLM_MODEL == "groq/llama-3.3-70b-versatile":
+    DEFAULT_GROQ_LITELLM_MODEL = "groq/openai/gpt-oss-120b"
+
 # Правила роутинга
 # Приватные данные и тяжёлый анализ → локально
 # Быстрые задачи и коммуникации → Groq
 ROUTING = {
-    "chief_of_staff":     "groq/llama-3.3-70b-versatile",  # читает TG — быстро нужно
-    "email_watchdog":     "groq/llama-3.3-70b-versatile",  # почта — быстро
-    "knowledge_curator":  "groq/llama-3.3-70b-versatile",  # сохранение заметок
-    "context_translator": "groq/llama-3.3-70b-versatile",  # перевод задач — скорость важна
+    "chief_of_staff":     DEFAULT_GROQ_LITELLM_MODEL,      # читает TG — быстро нужно
+    "email_watchdog":     DEFAULT_GROQ_LITELLM_MODEL,      # почта — быстро
+    "knowledge_curator":  DEFAULT_GROQ_LITELLM_MODEL,      # сохранение заметок
+    "context_translator": DEFAULT_GROQ_LITELLM_MODEL,      # перевод задач — скорость важна
     "task_sync":          "ollama/gpt-oss:20b",            # анализ задач — приватно
     "research_agent":     "ollama/gpt-oss:20b",            # тяжёлый анализ — локально
     "code_agent":         "ollama/qwen2.5-coder:7b",       # код — локально
@@ -42,13 +46,15 @@ ROUTING = {
 
 def get_model(agent_name: str) -> str:
     # Override из UI (agent_config) имеет приоритет над дефолтом ROUTING
-    model = _model_overrides().get(agent_name) or ROUTING.get(agent_name, "groq/llama-3.3-70b-versatile")
+    model = _model_overrides().get(agent_name) or ROUTING.get(agent_name, DEFAULT_GROQ_LITELLM_MODEL)
+    if model == "groq/llama-3.3-70b-versatile":
+        model = DEFAULT_GROQ_LITELLM_MODEL
 
     # Если системник недоступен — fallback на Groq
     if model.startswith("ollama"):
         if not _check_ollama():
             print(f"[Router] Ollama недоступен, fallback → Groq")
-            return "groq/llama-3.3-70b-versatile"
+            return DEFAULT_GROQ_LITELLM_MODEL
 
     # Бюджет-гард: если модель платная (tier 2) и месячный лимит исчерпан —
     # cost_guard сам даунгрейднет на free tier. Для free/local моделей это no-op,

@@ -5,15 +5,42 @@ from datetime import datetime
 from typing import Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-from sentence_transformers import SentenceTransformer
 import db
 
 # Инициализация
 qdrant = QdrantClient(host="127.0.0.1", port=6333)
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+embedder = None
+embedder_failed = False
+USE_SENTENCE_TRANSFORMERS = os.getenv("MEMORY_USE_SENTENCE_TRANSFORMERS", "0") == "1"
 
 COLLECTION = "shared_memory"
 VECTOR_SIZE = 384
+
+
+def _hash_vector(text: str) -> list[float]:
+    """Детерминированный fallback-вектор: хуже семантики, но агент не падает."""
+    raw = hashlib.sha256(str(text or "").encode()).digest()
+    vals = []
+    for i in range(VECTOR_SIZE):
+        b = raw[i % len(raw)]
+        vals.append((b / 127.5) - 1.0)
+    return vals
+
+
+def _embed(text: str) -> list[float]:
+    global embedder, embedder_failed
+    if not USE_SENTENCE_TRANSFORMERS:
+        return _hash_vector(text)
+    if not embedder_failed:
+        try:
+            if embedder is None:
+                from sentence_transformers import SentenceTransformer
+                embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            return embedder.encode(text).tolist()
+        except Exception as e:
+            embedder_failed = True
+            print(f"[memory] sentence-transformers недоступен, fallback hash-vector: {e}")
+    return _hash_vector(text)
 
 def init_memory():
     """Создаём коллекцию если нет"""
@@ -189,7 +216,7 @@ def remember(content: str, entity_type: str, source: str, agent: str, metadata: 
     conn.close()
 
     # Сохраняем в Qdrant для семантического поиска
-    vector = embedder.encode(content).tolist()
+    vector = _embed(content)
     qdrant.upsert(
         collection_name=COLLECTION,
         points=[PointStruct(
@@ -211,7 +238,7 @@ def remember(content: str, entity_type: str, source: str, agent: str, metadata: 
 def recall(query: str, entity_type: str = None, limit: int = 5) -> list:
     """Семантический поиск по памяти"""
     init_memory()
-    vector = embedder.encode(query).tolist()
+    vector = _embed(query)
 
     results = qdrant.query_points(
         collection_name=COLLECTION,

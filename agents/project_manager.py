@@ -29,7 +29,15 @@ ROLE_WORKER = {
 }
 
 
-def _pick_assignee(role, dom):
+def _pick_assignee(role, dom, title="", spec=""):
+    text = f"{title or ''}\n{spec or ''}".lower()
+    if dom == "content":
+        if any(w in text for w in ("ревью", "провер", "коррект", "редакт", "вычит", "оцен")):
+            return "content_reviewer"
+        if any(w in text for w in ("визуал", "картин", "изображ", "дизайн", "облож", "баннер")):
+            return "content_designer"
+        if any(w in text for w in ("пост", "текст", "копи", "письм", "сообщен", "сценар")):
+            return "content_writer"
     if role:
         w = ROLE_WORKER.get(str(role).strip().lower())
         if w:
@@ -50,6 +58,8 @@ def new_project(goal: str, name: str = None, domain: str = None) -> dict:
               "(writer, designer, reviewer, researcher, dev, ops). "
               'Если задача зависит от другой — укажи "after": номер задачи (1-based) в массиве. '
               "Например: контент-задачам обычно нужен порядок writer → designer → reviewer. "
+              "Не создавай задачи, которые утверждают, что публикация/письмо/изменение во внешнем сервисе "
+              "уже выполнены: финальные действия требуют отдельного инструмента и подтверждения. "
               'Верни ТОЛЬКО JSON-массив объектов вида '
               '[{"title":"...","spec":"что конкретно сделать","domain":"content",'
               '"role":"writer","after":null}]. Без пояснений вне JSON.'),
@@ -60,13 +70,16 @@ def new_project(goal: str, name: str = None, domain: str = None) -> dict:
         items = [{"title": name, "spec": goal, "domain": domain or "ops"}]
 
     tids = []
+    last_content_tid = None
     for i, it in enumerate(items[:8]):
         if not isinstance(it, dict):
             continue
         dom = (it.get("domain") or domain or "ops").strip().lower()
         if dom not in VALID_DOMAINS:
             dom = "ops"
-        assignee = _pick_assignee(it.get("role"), dom)
+        title = it.get("title", "задача")
+        spec = it.get("spec", "")
+        assignee = _pick_assignee(it.get("role"), dom, title, spec)
         # зависимость: "after" = 1-based индекс ранее созданной задачи
         deps = None
         after = it.get("after")
@@ -76,11 +89,15 @@ def new_project(goal: str, name: str = None, domain: str = None) -> dict:
                 deps = [tids[ai]]
         except (TypeError, ValueError):
             pass
+        if deps is None and dom == "content" and assignee in ("content_designer", "content_reviewer") and last_content_tid:
+            deps = [last_content_tid]
         tid = tasks.enqueue(
-            it.get("title", "задача")[:200], spec=it.get("spec", ""),
+            title[:200], spec=spec,
             project_id=pid, assignee=assignee, domain=dom, priority=5 + i, deps=deps,
         )
         tids.append(tid)
+        if dom == "content" and assignee in ("content_writer", "content_designer"):
+            last_content_tid = tid
 
     report_mod.report(
         "project_manager", kind="result", title=f"Новый проект: {name}",

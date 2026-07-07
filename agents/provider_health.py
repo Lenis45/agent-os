@@ -136,7 +136,7 @@ def main():
     L = [f"🩺 Здоровье LLM-провайдеров | {today}", ""]
     L.append("━━━ ОСНОВНЫЕ (мозг/воркеры) ━━━")
     L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← дефолт мозга" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
-    L.append(f"{gr[0]} Groq (Llama 3.3 70B) — {gr[1]}   ← фолбэк + воркеры" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
+    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← фолбэк + воркеры" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
 
     L.append("\n━━━ ОТКЛЮЧЕНЫ (опциональные, не используются) ━━━")
     L.append("⏸ Qwen / GLM / Kimi — веб-прокси выключены намеренно; мозг на DeepSeek. Чинить не нужно.")

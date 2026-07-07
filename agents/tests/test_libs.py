@@ -29,10 +29,10 @@ def test_parse_json_none():
 
 # ── llm.count_tokens / _is_empty ──────────────────────────────────
 def test_count_tokens_positive():
-    assert llm.count_tokens("groq/llama", "hello " * 10) > 0
+    assert llm.count_tokens("groq/openai/gpt-oss-120b", "hello " * 10) > 0
 
 def test_count_tokens_empty_is_zero():
-    assert llm.count_tokens("groq/llama", "") == 0
+    assert llm.count_tokens("groq/openai/gpt-oss-120b", "") == 0
 
 def test_is_empty():
     assert llm._is_empty("") and llm._is_empty("   ") and llm._is_empty(None)
@@ -43,7 +43,7 @@ def test_not_empty():
 
 # ── cost_guard: тиры и цена ───────────────────────────────────────
 def test_tier_free_local():
-    assert cost_guard.model_tier("groq/llama-3.3-70b-versatile") == 3
+    assert cost_guard.model_tier("groq/openai/gpt-oss-120b") == 3
     assert cost_guard.model_tier("ollama/gpt-oss:20b") == 3
 
 def test_tier_paid_api():
@@ -54,14 +54,23 @@ def test_tier_manual():
     assert cost_guard.model_tier("claude-pro-web") == 1
 
 def test_cost_free_is_zero():
-    assert cost_guard.estimate_cost_rub("groq/llama", 1000, 1000) == 0.0
+    assert cost_guard.estimate_cost_rub("groq/openai/gpt-oss-120b", 1000, 1000) == 0.0
 
 def test_cost_paid_positive():
     assert cost_guard.estimate_cost_rub("claude-sonnet", 10000, 4000) > 0
 
 def test_guard_passthrough_free():
     # free-модель никогда не даунгрейдится
-    assert cost_guard.guard_model("groq/llama-3.3-70b-versatile", "test") == "groq/llama-3.3-70b-versatile"
+    assert cost_guard.guard_model("groq/openai/gpt-oss-120b", "test") == "groq/openai/gpt-oss-120b"
+
+def test_deprecated_groq_model_is_normalized():
+    assert llm.normalize_groq_model("llama-3.3-70b-versatile") == "openai/gpt-oss-120b"
+    assert llm.normalize_groq_model("groq/llama-3.3-70b-versatile", litellm=True) == "groq/openai/gpt-oss-120b"
+
+def test_unsupported_amori_claims_detected():
+    claims = llm.unsupported_product_claims("Ошейник показывает местоположение в реальном времени и мониторит здоровье.")
+    assert "real-time location" in claims
+    assert "health/activity monitoring" in claims
 
 
 # ── retry ─────────────────────────────────────────────────────────
@@ -105,7 +114,7 @@ def test_record_run_roundtrip():
         db.execute("DELETE FROM infra_runs WHERE kind='pytest_kind'", dbname="ops_db")
 
 def test_cost_guard_record_roundtrip():
-    cost_guard.record_usage("pytest_agent", "groq/llama", 100, 50, source="pytest")
+    cost_guard.record_usage("pytest_agent", "groq/openai/gpt-oss-120b", 100, 50, source="pytest")
     try:
         n = db.query("SELECT count(*) FROM llm_usage WHERE agent='pytest_agent'", dbname="ops_db")[0][0]
         assert n >= 1

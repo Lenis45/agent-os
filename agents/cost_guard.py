@@ -116,7 +116,9 @@ def guard_model(model: str, agent: str = "?") -> str:
     if action == "block":
         raise RuntimeError(f"[cost_guard] месячный лимит платного API исчерпан — вызов '{agent}' заблокирован")
     # downgrade | queue_tier1 → отдаём free tier
-    fallback = os.getenv("FREE_FALLBACK_MODEL", "groq/llama-3.3-70b-versatile")
+    fallback = os.getenv("FREE_FALLBACK_MODEL", "groq/openai/gpt-oss-120b")
+    if fallback == "groq/llama-3.3-70b-versatile":
+        fallback = "groq/openai/gpt-oss-120b"
     print(f"[cost_guard] бюджет исчерпан, '{agent}': {model} → {fallback}")
     return fallback
 
@@ -124,7 +126,7 @@ def guard_model(model: str, agent: str = "?") -> str:
 if __name__ == "__main__":
     ops_store.init()
     # smoke
-    c = record_usage("smoke_test", "groq/llama-3.3-70b-versatile", 1000, 500, source="selftest")
+    c = record_usage("smoke_test", "groq/openai/gpt-oss-120b", 1000, 500, source="selftest")
     print(f"[cost_guard] free вызов записан, cost={c}₽")
     c2 = estimate_cost_rub("claude-sonnet", 10000, 4000)
     print(f"[cost_guard] оценка claude-sonnet 10k/4k = {c2}₽")

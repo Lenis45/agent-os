@@ -149,8 +149,7 @@ async def run():
 
 Не выдумывай. Если раздел пуст — напиши «— нет»."""
 
-    result = llm.run(make_agent(), prompt, "chief_of_staff")
-    result_str = str(result)
+    result_str = await asyncio.to_thread(lambda: str(llm.run(make_agent(), prompt, "chief_of_staff")))
 
     # Сохраняем дайджест в память (не валим прогон при ошибке БД)
     safe(save_digest, period, [], [], [], [], result_str, label="save_digest", logger=log)
