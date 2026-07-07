@@ -115,10 +115,14 @@ def run():
     ]
     for host, ek, pk in accounts:
         addr = os.getenv(ek)
+        pwd = os.getenv(pk)
         if not addr:
             continue
+        if not pwd:
+            log.warning(f"Пропускаю {ek}: пароль {pk} не задан")
+            continue
         log.info(f"Проверяю {addr}...")
-        all_emails += fetch_emails(host, addr, os.getenv(pk))
+        all_emails += fetch_emails(host, addr, pwd)
 
     if not all_emails:
         notify.send(f"Email Watchdog | {now_str}\nНовых писем за последние 24 часа нет.")

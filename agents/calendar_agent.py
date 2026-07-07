@@ -33,6 +33,8 @@ tg = TelegramClient(
 )
 
 def get_calendar_service():
+    if not os.path.exists(TOKEN_FILE):
+        raise RuntimeError("Google Calendar token.json не найден — нужна повторная авторизация")
     creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
@@ -149,7 +151,17 @@ async def run():
     log.info(f"[{now_str}] Calendar Agent запущен...")
 
     # Получаем текущие события
-    upcoming = get_upcoming_events(days=7)
+    try:
+        upcoming = get_upcoming_events(days=7)
+    except Exception as e:
+        log.error(f"Calendar unavailable: {e}")
+        notify.send(
+            f"📅 Calendar Agent | {now_str}\n"
+            f"Не смог подключиться к Google Calendar: {str(e)[:300]}\n"
+            "Автоматическое добавление/удаление событий пропущено. Нужно обновить Google token.json.",
+            "warn",
+        )
+        return
     log.info(f"Событий в календаре: {len(upcoming)}")
 
     existing_titles = []
@@ -232,7 +244,7 @@ EMAIL (последние 3 дня):
 
 Верни только JSON."""
 
-    result = llm.run(agent, prompt, "calendar_agent")
+    result = await asyncio.to_thread(lambda: llm.run(agent, prompt, "calendar_agent"))
     data = llm.parse_json(result)
     if not isinstance(data, dict):
         notify.send(f"📅 Calendar Agent {now_str}\nОшибка парсинга ответа.")
@@ -254,11 +266,20 @@ EMAIL (последние 3 дня):
 
         if act == "add":
             try:
-                date = action.get("date", now.strftime("%Y-%m-%d"))
-                t_start = action.get("time_start", "10:00")
-                t_end = action.get("time_end", "11:00")
+                date = action.get("date")
+                t_start = action.get("time_start")
+                t_end = action.get("time_end")
+                if not date or not t_start or not t_end:
+                    recommended.append(f"❓ {title}\n   Не добавлено автоматически: нет точной даты/времени.")
+                    continue
                 start_dt = datetime.strptime(f"{date} {t_start}", "%Y-%m-%d %H:%M")
                 end_dt = datetime.strptime(f"{date} {t_end}", "%Y-%m-%d %H:%M")
+                if end_dt <= start_dt:
+                    recommended.append(f"❓ {title}\n   Не добавлено автоматически: некорректный интервал времени.")
+                    continue
+                if not reason:
+                    recommended.append(f"❓ {title}\n   Не добавлено автоматически: нет объяснения источника.")
+                    continue
 
                 # Проверяем не добавляли ли уже
                 mem_key = f"calendar_{title}_{date}"

@@ -15,6 +15,7 @@ worker_handlers — специализированные хендлеры вор
 import llm
 import base_agent
 import ponytail
+import agent_contracts
 
 AMORI = "стартап Amori — умные GPS-ошейники для домашних животных, рынок РФ/СНГ"
 PRODUCT_GUARDRAILS = """
@@ -58,7 +59,7 @@ def content_writer(task):
          "Верни только готовый текст, без служебных комментариев.")
     result = str(llm.run(a, p, "content_writer"))
     try:
-        return llm.ensure_safe_amori_output(result, "content_writer")
+        return agent_contracts.ensure_safe_marketing_text(result, "content_writer")
     except ValueError as e:
         return _safe_content_fallback(task, e)
 

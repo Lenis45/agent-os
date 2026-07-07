@@ -24,6 +24,7 @@ import ops_store
 import notify
 import report as report_mod
 import worker_handlers
+import agent_contracts
 
 CHANNELS = {"telegram", "vk", "email", "landing", "ad"}
 KINDS = {"post", "email", "ad_creative", "landing"}
@@ -142,19 +143,20 @@ def publish(cid):
     if not item:
         return {"ok": False, "error": "not found"}
     ok, info = _do_publish(item["channel"], item)
-    if ok:
+    real_publish = agent_contracts.is_real_publish_result(ok, info)
+    if real_publish:
         _set_status(cid, "published", "published_at")
     else:
-        # реальная отправка упала → НЕ помечаем published, оставляем approved для повтора
+        # Нет реальной отправки во внешний канал → не помечаем published.
         _set_status(cid, "approved")
     report_mod.report(
         "content_factory", kind="content",
-        title=f"{'Опубликовано' if ok else 'Ошибка публикации'} #{cid} ({item['channel']})",
+        title=f"{'Опубликовано' if real_publish else 'Готово к ручной публикации'} #{cid} ({item['channel']})",
         summary=info[:300], project_id=item.get("project_id"),
-        meta={"content_id": cid, "channel": item["channel"], "ok": ok}, telegram=True,
+        meta={"content_id": cid, "channel": item["channel"], "ok": ok, "real_publish": real_publish}, telegram=True,
     )
-    print(f"[content_factory] #{cid} publish ok={ok}: {info}")
-    return {"ok": ok, "info": info}
+    print(f"[content_factory] #{cid} publish ok={ok} real={real_publish}: {info}")
+    return {"ok": ok, "published": real_publish, "info": info}
 
 
 def _do_publish(channel, item):
@@ -172,10 +174,10 @@ def _do_publish(channel, item):
                 return True, f"отправлено в Telegram-канал {chan}"
             except Exception as e:
                 return False, f"ошибка публикации в TG: {e}"
-        return True, "TG-канал не настроен (TELEGRAM_CHANNEL_ID) — сохранено как готовое к публикации"
+        return False, "TG-канал не настроен (TELEGRAM_CHANNEL_ID) — осталось approved для ручной публикации"
     if channel == "vk":
-        return True, "VK-токен не настроен — сохранено как готовое к публикации"
-    return True, f"{channel}: сохранено как готовое к публикации (ручная отправка)"
+        return False, "VK-токен не настроен — осталось approved для ручной публикации"
+    return False, f"{channel}: осталось approved для ручной отправки"
 
 
 def recent(limit=20):

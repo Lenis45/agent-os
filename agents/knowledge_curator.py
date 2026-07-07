@@ -65,7 +65,17 @@ ROLE_ICONS = {
 }
 
 def save_to_obsidian(folder, filename, content):
-    folder_path = os.path.join(VAULT, folder)
+    if not VAULT:
+        raise RuntimeError("OBSIDIAN_VAULT не задан")
+    root = os.path.abspath(os.path.expanduser(VAULT))
+    clean_parts = [
+        re.sub(r'[<>:"\\|?*]', '-', part).strip()
+        for part in str(folder or "01 - Inbox/Необработанное").split("/")
+        if part.strip() and part.strip() not in (".", "..")
+    ]
+    folder_path = os.path.abspath(os.path.join(root, *clean_parts))
+    if os.path.commonpath([root, folder_path]) != root:
+        raise ValueError("некорректный путь Obsidian")
     os.makedirs(folder_path, exist_ok=True)
     safe_name = re.sub(r'[<>:"/\\|?*]', '-', filename)
     if not safe_name.endswith('.md'):

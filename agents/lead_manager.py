@@ -8,6 +8,7 @@ from memory import init_db
 import db
 import notify
 import llm
+import agent_contracts
 from applog import get_logger
 from retry import safe
 
@@ -35,54 +36,87 @@ STAGES = {
 
 # ===== WEEEK CRM =====
 
+def _weeek_ready() -> bool:
+    ok, reason = agent_contracts.require_env("WEEEK_TOKEN", "WEEEK_STAGE_NEW")
+    if not ok:
+        log.warning(f"WEEEK disabled: {reason}")
+        return False
+    return True
+
 def create_weeek_contact(name: str, email: str = None, phone: str = None) -> str:
+    if not _weeek_ready():
+        return None
     first, *last = name.split()
     body = {"firstName": first, "lastName": " ".join(last) if last else None}
     if email:
         body["emails"] = [email]
     if phone:
         body["phones"] = [phone]
-    r = requests.post(
-        "https://api.weeek.net/public/v1/crm/contacts",
-        headers=WEEEK_HEADERS, json=body
-    )
-    data = r.json()
+    try:
+        r = requests.post(
+            "https://api.weeek.net/public/v1/crm/contacts",
+            headers=WEEEK_HEADERS, json=body, timeout=12
+        )
+        data = r.json() if r.ok else {}
+    except Exception as e:
+        log.warning(f"WEEEK contact failed: {e}")
+        return None
     if data.get("success"):
         return data["contact"]["id"]
     return None
 
 def create_weeek_deal(title: str, contact_id: str, stage: str = "new", amount: float = None) -> str:
+    if not _weeek_ready():
+        return None
     status_id = STAGES.get(stage, STAGES["new"])
+    if not status_id:
+        log.warning(f"WEEEK deal skipped: stage {stage} not configured")
+        return None
     body = {"title": title, "statusId": status_id}
     if amount:
         body["amount"] = amount
-    r = requests.post(
-        f"https://api.weeek.net/public/v1/crm/statuses/{status_id}/deals",
-        headers=WEEEK_HEADERS, json=body
-    )
-    data = r.json()
+    try:
+        r = requests.post(
+            f"https://api.weeek.net/public/v1/crm/statuses/{status_id}/deals",
+            headers=WEEEK_HEADERS, json=body, timeout=12
+        )
+        data = r.json() if r.ok else {}
+    except Exception as e:
+        log.warning(f"WEEEK deal failed: {e}")
+        return None
     if data.get("success"):
         deal_id = data["deal"]["id"]
         # Привязываем контакт к сделке
         if contact_id:
-            requests.post(
-                f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/contacts",
-                headers=WEEEK_HEADERS,
-                json={"contactId": contact_id}
-            )
+            try:
+                requests.post(
+                    f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/contacts",
+                    headers=WEEEK_HEADERS,
+                    json={"contactId": contact_id},
+                    timeout=12,
+                )
+            except Exception as e:
+                log.warning(f"WEEEK link contact failed: {e}")
         return deal_id
     return None
 
 def update_deal_stage(deal_id: str, new_stage: str):
+    if not _weeek_ready():
+        return False
     status_id = STAGES.get(new_stage)
     if not status_id:
         return False
-    r = requests.put(
-        f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
-        headers=WEEEK_HEADERS,
-        json={"statusId": status_id}
-    )
-    return r.json().get("success", False)
+    try:
+        r = requests.put(
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
+            headers=WEEEK_HEADERS,
+            json={"statusId": status_id},
+            timeout=12,
+        )
+        return (r.json() if r.ok else {}).get("success", False)
+    except Exception as e:
+        log.warning(f"WEEEK stage update failed: {e}")
+        return False
 
 # ===== PostgreSQL =====
 

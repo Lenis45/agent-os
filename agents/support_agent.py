@@ -11,6 +11,7 @@ from memory import init_db, remember, recall
 
 import db
 import llm
+import agent_contracts
 import notify
 from applog import get_logger
 
@@ -268,7 +269,7 @@ save_to_faq=true: типичный вопрос с хорошим ответом
         if not isinstance(data, dict):
             raise ValueError("LLM вернул не JSON")
         answer = str(data.get("answer") or "")
-        if llm.unsupported_product_claims(answer):
+        if agent_contracts.output_issues(answer):
             data["answer"] = (
                 "Пока не хочу обещать неподтверждённые функции. Продукт находится в разработке, "
                 "а точные параметры GPS, приложения, цены и сроков команда ещё уточняет. "

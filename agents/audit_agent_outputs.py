@@ -1,27 +1,13 @@
 #!/usr/bin/env python3
 """Audit recent AI-team reports for unsafe claims and fake external actions."""
 import argparse
-import re
 
 import db
-import llm
-
-
-FAKE_EXTERNAL_ACTIONS = {
-    "published": re.compile(r"\b(опубликовал[аи]?|опубликован[оаы]?|размещен[оаы]?|запостил[аи]?)\b", re.I),
-    "sent": re.compile(r"\b(отправил[аи]?|письмо\s+отправлен[оа]?|рассылка\s+запущен[а]?)\b", re.I),
-    "implemented": re.compile(r"\b(внедрил[аи]?|исправил[аи]?\s+в\s+коде|изменения\s+применены|протестировал[аи]?)\b", re.I),
-}
+import agent_contracts
 
 
 def _hits(text: str) -> list[str]:
-    issues = []
-    for claim in llm.unsupported_product_claims(text):
-        issues.append(f"unsupported_product_claim:{claim}")
-    for label, pattern in FAKE_EXTERNAL_ACTIONS.items():
-        if pattern.search(text):
-            issues.append(f"unverified_external_action:{label}")
-    return issues
+    return agent_contracts.output_issues(text)
 
 
 def audit(limit: int = 50) -> list[dict]:

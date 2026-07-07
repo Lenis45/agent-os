@@ -9,6 +9,7 @@ from memory import init_db
 import db
 import notify
 import llm
+import agent_contracts
 from applog import get_logger
 
 load_dotenv()
@@ -23,6 +24,10 @@ GMAIL = os.getenv("GMAIL1_EMAIL")
 GMAIL_PASSWORD = os.getenv("GMAIL1_PASSWORD")
 
 def send_email(to: str, subject: str, body: str, from_name: str = "Denis | Amori") -> bool:
+    ok, reason = agent_contracts.require_env("GMAIL1_EMAIL", "GMAIL1_PASSWORD")
+    if not ok:
+        log.error(f"Email config error: {reason}")
+        return False
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
@@ -48,6 +53,9 @@ def generate_email(lead_data: dict, email_type: str = "intro") -> dict:
 
 Стиль: дружелюбный, живой, не корпоративный. Короткие абзацы. Без воды.
 Письмо должно ощущаться как личное, не шаблонное.
+Не обещай неподтверждённые функции: real-time, точность GPS, уведомления, геозоны,
+мониторинг здоровья/активности, готовое приложение, цену или сроки запуска.
+Если данных нет — честно пиши, что параметры уточняются.
 Верни JSON: {"subject": "тема письма", "body": "текст письма"}""",
     )
 
@@ -87,8 +95,17 @@ def generate_email(lead_data: dict, email_type: str = "intro") -> dict:
     result = llm.run(agent, prompts.get(email_type, prompts["intro"]), "email_agent")
     parsed = llm.parse_json(result)
     if isinstance(parsed, dict) and parsed.get("body"):
+        try:
+            parsed["body"] = agent_contracts.ensure_safe_marketing_text(parsed["body"], "email_agent")
+        except ValueError as e:
+            parsed["body"] = agent_contracts.safe_product_fallback(str(e))
         return parsed
-    return {"subject": f"Знакомство — Amori для вашего {pet}", "body": str(result)}
+    body = str(result)
+    try:
+        body = agent_contracts.ensure_safe_marketing_text(body, "email_agent")
+    except ValueError as e:
+        body = agent_contracts.safe_product_fallback(str(e))
+    return {"subject": f"Знакомство — Amori для вашего {pet}", "body": body}
 
 def send_to_lead(lead_id: int, email_type: str = "intro") -> bool:
     conn = get_db()
