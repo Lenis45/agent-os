@@ -1,87 +1,137 @@
 # mcp/
 
-A [FastMCP](https://github.com/jlowin/fastmcp) stdio server that exposes the AI team to external agents.
-One server, three clients: **Claude Code**, **Codex**, **Hermes**.
+FastMCP stdio bridge that exposes the Amori AI operating system to local coding
+assistants such as Codex, Claude Code, and Hermes.
 
-## Why stdio
+It is a local operator bridge, not a public API. The server opens no network
+port and communicates through stdio with the client process that started it.
 
-Stdio transport means the MCP server is a subprocess. It:
-- Never opens a port
-- Can't be reached from outside the machine
-- Starts and stops with the AI client session
+---
 
-## The 11 tools
+## Why MCP Exists Here
 
-### Projects & tasks
-| Tool | What it does |
-|---|---|
-| `new_project(goal)` | LLM decomposes goal → enqueues tasks for the team |
-| `list_projects()` | Recent projects with status |
-| `project_status(id)` | Tasks, results, progress for one project |
-| `list_tasks(status?)` | Task queue — queued/running/done/failed |
+Denis uses coding assistants to inspect and operate the Amori system. MCP gives
+those assistants a typed tool surface instead of forcing them to scrape logs,
+guess SQL, or manually run agent scripts.
 
-### Content factory
-| Tool | What it does |
-|---|---|
-| `create_content(brief, channel, kind)` | Runs the full pipeline: write → design brief → review → pending |
-| `approve_content(id)` | Approve and publish a pending content item |
-| `reject_content(id, reason)` | Reject with feedback |
-| `list_content(status?)` | Content items by status |
-
-### Ops
-| Tool | What it does |
-|---|---|
-| `system_status()` | Full snapshot: agents, containers, DBs, queue depth, LLM spend |
-| `recent_reports(n?)` | Latest N agent reports |
-| `sql_read(db, query)` | Read-only SQL on `ops_db` or `customer_db` |
-
-## Security on `sql_read`
-
-Inputs from LLMs are untrusted. Guards applied:
-```python
-# Only SELECT or WITH
-if not re.match(r"^\s*(SELECT|WITH)\b", query, re.I):
-    raise ValueError("read-only: only SELECT/WITH allowed")
-
-# Whitelist databases
-if db not in {"ops_db", "customer_db"}:
-    raise ValueError(f"unknown db: {db}")
-
-# No DDL/DML hiding inside CTEs
-for bad in (";", "DROP ", "DELETE ", "UPDATE ", "INSERT ", "TRUNCATE ", "ALTER "):
-    if bad.upper() in query.upper():
-        raise ValueError(f"disallowed keyword: {bad}")
-
-# Auto-LIMIT 200, statement_timeout 8s
+```mermaid
+flowchart LR
+    Client["Codex / Claude / Hermes"] -->|stdio MCP| Server["mcp/server.py"]
+    Server -->|read| Dash["dashboard /api/state"]
+    Server -->|read| Ops[("ops_db")]
+    Server -->|read| Customer[("customer_db")]
+    Server -->|write via subprocess| PM["project_manager.py"]
+    Server -->|write via subprocess| CF["content_factory.py"]
+    PM --> Ops
+    CF --> Ops
 ```
 
-## Design: why subprocess for writes
+Design rule: read operations are direct and lightweight; write operations reuse
+the existing CLI entrypoints so MCP does not duplicate business logic or import
+heavy LLM dependencies into the JSON-RPC process.
 
-Content creation and project management involve LLM calls (via litellm + Groq).
-If the MCP server imported those, their `print()` statements would corrupt the JSON-RPC stream on stdout.
+---
 
-Solution: reads go directly via psycopg2; writes shell out to the existing Python CLIs:
+## Tool Surface
+
+### Projects And Tasks
+
+| Tool | Type | What it does |
+|---|---|---|
+| `new_project(goal)` | write | Decomposes a goal into queued tasks through `project_manager.py` |
+| `list_projects()` | read | Lists recent projects with progress |
+| `project_status(id)` | read | Lists tasks for one project |
+| `list_tasks(status?)` | read | Lists queued/running/done/failed tasks |
+
+### Content Factory
+
+| Tool | Type | What it does |
+|---|---|---|
+| `create_content(brief, channel, kind)` | write | Runs copy -> visual brief -> review and creates `pending` content |
+| `approve_content(id)` | write | Approves content and attempts configured external delivery |
+| `reject_content(id)` | write | Rejects content |
+| `list_content()` | read | Lists recent content items and statuses |
+
+`approve_content(id)` does not guarantee publication. If Telegram is not
+configured or delivery fails, the item remains `approved`; it becomes
+`published` only after the Telegram API accepts the send.
+
+### Status And Data
+
+| Tool | Type | What it does |
+|---|---|---|
+| `system_status()` | read | Summarizes dashboard state, queue, content, heartbeats |
+| `recent_reports(limit?)` | read | Returns recent agent reports |
+| `sql_read(db, query)` | read | Runs guarded read-only SQL on `ops_db` or `customer_db` |
+
+---
+
+## Security Model
+
+```mermaid
+flowchart TB
+    LLM["Assistant output<br/>untrusted"] --> MCP["MCP server"]
+    MCP --> Guard["Input guards"]
+    Guard --> ReadSQL["Read-only SQL<br/>SELECT/WITH only"]
+    Guard --> CLIs["Existing CLIs<br/>controlled writes"]
+    ReadSQL --> DBs[("ops_db / customer_db")]
+    CLIs --> Agents["Amori agent runtime"]
+```
+
+Guards applied to `sql_read`:
+
+- Only `SELECT` or `WITH` queries are allowed.
+- Database name must be `ops_db` or `customer_db`.
+- Statements containing `;`, `DROP`, `DELETE`, `UPDATE`, `INSERT`, `TRUNCATE`,
+  or `ALTER` are rejected.
+- `LIMIT 200` is appended when no limit is present.
+- PostgreSQL `statement_timeout` is set to 8 seconds.
+
+The MCP process reads secrets from the same untracked local environment as the
+agents. README files may document variable names but must never include values.
+
+---
+
+## Why Writes Use Subprocesses
+
+Content creation and project planning call LLM providers. Importing those
+modules directly inside MCP would pull in heavy dependencies and can corrupt
+stdio JSON-RPC if any dependency prints to stdout.
+
+The server therefore shells out to the existing CLIs and returns the tail of
+their captured output:
+
 ```python
 def _run(*args, timeout=200) -> str:
-    r = subprocess.run(["/opt/anaconda3/bin/python3", *args],
-                       cwd=AGENTS_DIR, capture_output=True, text=True, timeout=timeout)
-    return r.stdout[-1500:]  # return last 1500 chars of output
+    r = subprocess.run(
+        [PY, *args],
+        cwd=AGENTS,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return r.stdout[-1500:]
 ```
 
-## Connect from Claude Code
+---
+
+## Connect From Claude Code
 
 ```bash
 claude mcp add agent-os -s user -- ~/ai-infra/mcp/run.sh
 ```
 
-Then in any Claude Code session:
-```
+Example tool usage:
+
+```text
 use agent-os:system_status
-use agent-os:new_project "write a product comparison between Amori v1 and competitors"
-use agent-os:list_content pending
+use agent-os:new_project "prepare three Telegram posts about Amori positioning"
+use agent-os:list_content
 ```
 
-## Connect from Codex
+---
+
+## Connect From Codex
 
 ```toml
 # ~/.codex/config.toml
@@ -90,12 +140,15 @@ command = "/bin/bash"
 args = ["-c", "~/ai-infra/mcp/run.sh"]
 ```
 
+---
+
 ## Dependencies
 
 ```bash
-cd mcp
+cd ~/ai-infra/mcp
 python -m venv .venv
 .venv/bin/pip install "mcp[cli]" psycopg2-binary python-dotenv
 ```
 
-The venv is intentionally minimal — no litellm, no heavy ML deps, no print pollution.
+The venv is intentionally minimal: no LiteLLM, no heavy ML packages, and no
+runtime that can print uncontrolled text into the MCP protocol stream.

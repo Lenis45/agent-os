@@ -1,19 +1,19 @@
 """
-content_factory — конвейер контента для продаж Amori (Фаза 2).
+content_factory — human-in-the-loop конвейер контента Amori.
 
-Поток: бриф → текст (копирайтер) → визуальный бриф (дизайнер) → ревью →
-аппрув → публикация. Использует доменных воркеров из worker_handlers (Фаза 3).
+Поток: бриф -> текст (копирайтер) -> визуальный бриф (дизайнер) -> ревью ->
+pending -> аппрув Дениса -> реальная отправка, если внешний канал настроен.
 
 Аппрув-гейт: кнопки в дашборде (:8099) + превью в Telegram (одностороннее).
-Публикация: реальная в Telegram-канал, если задан TELEGRAM_CHANNEL_ID; иначе
-контент сохраняется со статусом published как «готово к ручной публикации»
-(VK/landing/email требуют своих токенов — заложены хуки).
+Статус `published` ставится только после подтверждённого результата внешнего
+инструмента. Если `TELEGRAM_CHANNEL_ID` не задан или Telegram вернул ошибку,
+контент остаётся `approved` и считается готовым к ручной публикации/повтору.
 
 CLI:
   python3 content_factory.py "бриф" [channel] [kind]   — создать на аппрув
-  python3 content_factory.py approve <id>              — одобрить + опубликовать
+  python3 content_factory.py approve <id>              — одобрить + попытаться отправить
   python3 content_factory.py reject  <id> [причина]    — отклонить
-  python3 content_factory.py publish <id>              — опубликовать
+  python3 content_factory.py publish <id>              — попытаться отправить
 """
 import os
 import sys

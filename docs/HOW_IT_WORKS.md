@@ -1,195 +1,313 @@
-# 🏢 Amori AI-инфра — как всё работает
+# Amori AI-инфра — как всё работает
 
-> Твоя личная мини-AI-команда на Mac Mini. Этот документ — карта: что система делает,
-> куда смотреть и чего от неё ожидать. Обновлено: 2026-06-12.
-
----
-
-## 1. Что это и чего ждать
-
-Это не «один чат-бот», а **команда из агентов и работников**, которая ведёт **проекты** и
-производит **контент для продаж**. Ты ставишь цель или бриф — команда сама раскладывает работу
-на задачи, выполняет их и складывает результаты в одно место (дашборд).
-
-**Два режима работы системы:**
-- **Автономно** — агенты работают по расписанию сами: следят за почтой, синхронизируют задачи,
-  считают лиды, делают дайджесты, бэкапят данные, мониторят инфраструктуру.
-- **По запросу** — ты говоришь цель («сделай 3 поста про ошейник») голосом/текстом в Telegram или
-  кнопкой в дашборде → команда выполняет.
-
-**Что требует твоего участия (аппрув):** контент-завод НЕ публикует сам — готовый пост/письмо
-ждёт твоего «✅ Опубликовать» в дашборде. Всё остальное команда делает сама и сдаёт отчёт.
-
-**Чего ожидать по скорости:** задача воркера = 1 LLM-вызов (~5–15 сек, иногда до ~2 мин если Groq
-отдал транзиентную ошибку и сработал повтор — это норма). Проект из 6 задач — обычно 1–3 минуты.
+> Личная AI-команда Дениса Колесникова для операционной работы над Amori.
+> Обновлено: 2026-07-09. Документ описывает фактическую систему, а не дальний план.
 
 ---
 
-## 2. Карта системы
+## 1. Смысл системы
 
+Amori AI-инфра — это локальная операционная система из агентов, баз данных,
+дашборда, очереди задач, бэкапов и аудита. Она помогает одному founder/operator
+вести несколько рабочих контуров:
+
+- личные задачи и коммуникации;
+- SMM и контент для Amori;
+- CRM/лиды/поддержку;
+- аналитику задач и статуса команды;
+- знаниевую базу;
+- мониторинг и восстановимость инфраструктуры.
+
+Это не автономный бот, который сам публикует всё подряд. Система работает по
+правилу:
+
+> AI готовит, проверяет, раскладывает и предлагает. Денис подтверждает внешние
+> и необратимые действия.
+
+---
+
+## 2. Текущее состояние
+
+Факты последней проверки:
+
+| Параметр | Значение |
+|---|---|
+| Контейнеры | 5/5 работают |
+| Dashboard | `http://localhost:8099` |
+| Pixel office | `http://localhost:5070` |
+| Тесты агентов | `90 passed` |
+| Очередь задач | пустая на момент проверки |
+| Основная Groq-модель | `groq/openai/gpt-oss-120b` |
+| Платный API | лимит 2500 RUB/мес, текущий paid spend 0.00 RUB |
+| Restore-test | проходит, бэкап восстановим |
+
+Зоны внимания:
+
+- `calendar_agent`: Google OAuth token протух (`invalid_grant`), нужна повторная авторизация.
+- `email_watchdog`: один IMAP-аккаунт даёт `AUTHENTICATIONFAILED`, нужен новый app password.
+- В БД есть старые отчёты от июня с неподтверждёнными продуктовым claims; новые guardrails уже
+  блокируют такие ответы.
+- Логи Telegram иногда содержат сетевые `EndOfStream`/SSL ошибки; процессы поднимаются launchd.
+
+---
+
+## 3. Архитектура
+
+```mermaid
+flowchart TB
+    Denis["Денис<br/>основатель / оператор"]
+
+    subgraph UI["Интерфейсы"]
+        TG["Telegram<br/>команды, голос, фото, документы"]
+        Dash["Dashboard :8099<br/>проекты, контент, система"]
+        Office["Pixel office :5070<br/>визуализация команды"]
+        MCP["MCP<br/>Codex / Claude / Hermes"]
+    end
+
+    subgraph AgentLayer["Слой агентов"]
+        Emilia["Emilia<br/>orchestrator"]
+        PM["project_manager"]
+        Factory["content_factory"]
+        Worker["worker_dispatch"]
+        Personal["personal agents<br/>chief, email, calendar, curator"]
+        Customer["customer agents<br/>lead, email, support"]
+    end
+
+    subgraph Storage["Хранилища"]
+        Ops[("ops_db<br/>операционка")]
+        Cust[("customer_db<br/>лиды и поддержка")]
+        Agents[("agents<br/>память и команда")]
+        Qdrant[("Qdrant<br/>векторная память")]
+        Vault["Obsidian vault"]
+    end
+
+    subgraph External["Внешние сервисы"]
+        LLM["Groq / DeepSeek / Ollama"]
+        Telegram["Telegram API"]
+        Mail["IMAP / SMTP"]
+        Calendar["Google Calendar"]
+        Weeek["WEEEK"]
+        Taiga["Taiga"]
+    end
+
+    Denis --> TG
+    Denis --> Dash
+    Denis --> Office
+    Denis --> MCP
+
+    TG --> Emilia
+    Dash --> Emilia
+    MCP --> Emilia
+
+    Emilia --> PM
+    Emilia --> Factory
+    PM --> Ops
+    Factory --> Ops
+    Worker --> Ops
+    Worker --> AgentLayer
+    Personal --> Agents
+    Personal --> Qdrant
+    Personal --> Vault
+    Customer --> Cust
+    AgentLayer --> LLM
+    AgentLayer --> Telegram
+    Personal --> Mail
+    Personal --> Calendar
+    Customer --> Weeek
+    Personal --> Taiga
 ```
-        ТЫ
-   (Telegram / дашборд :8099)
-         │  цель / бриф
-         ▼
-   Оркестратор (Emilia)  ──── инструменты: new_project, make_content, лиды, календарь…
-         │
-         ├── project_manager → раскладывает цель на задачи (роли + зависимости)
-         │                         │
-         │                         ▼
-         │                   ОЧЕРЕДЬ ЗАДАЧ (ops_db.tasks)
-         │                         │  ai.worker разбирает
-         │                         ▼
-         │        ВОРКЕРЫ: копирайтер · дизайнер · ревьюер · ресёрчер · dev · ops
-         │                         │
-         └── content_factory → бриф→текст→визуал→ревью→ [твой аппрув] →публикация
-                                   │
-                                   ▼
-                       ОТЧЁТ-ХАБ (ops_db.reports) → видно в дашборде
-```
-
-**Контуры (изоляция данных):**
-- **personal** — твои личные агенты (оркестратор, календарь, почта, знания, дайджесты).
-- **customer** — клиентские данные (CRM/лиды/поддержка), помечены под 152-ФЗ, отдельная БД.
-- **ops-слой** — наблюдаемость: учёт LLM-расходов, бюджет-гард, мониторинг, бэкапы, heartbeat.
 
 ---
 
-## 3. Агенты — кто что делает
+## 4. Данные
 
-### Базовые агенты (работают по расписанию)
+### Базы PostgreSQL
 
-| Агент | Что делает | Когда (запуск) | Куда отчёт |
+| База | Зачем нужна | Примеры таблиц |
+|---|---|---|
+| `ops_db` | Операционное ядро и аудит | `projects`, `tasks`, `reports`, `content_items`, `agent_registry`, `llm_usage`, `infra_runs`, `infra_heartbeats` |
+| `customer_db` | Клиентский контур | `leads`, `support_tickets`, `support_messages`, `support_faq` |
+| `agents` | Личная память и команда | `team_members`, `known_entities`, `chief_digests` |
+| `n8n` | workflow state | внутренние таблицы n8n |
+
+### Неформальные и внешние данные
+
+| Источник | Как используется |
+|---|---|
+| Telegram личный контур | Команды, диалог с Emilia, дайджесты Chief of Staff |
+| Telegram support bot | Клиентские тикеты и эскалации |
+| Obsidian vault | Сохранённые заметки, задачи, контекст команды |
+| Qdrant | Векторный поиск по shared/project memory |
+| IMAP | Входящая почта для daily digest |
+| SMTP | Outbound email для лидов, только по явной команде |
+| Google Calendar | Календарные события, когда OAuth token валиден |
+| WEEEK/Taiga | Снимки задач, KPI, управленческий отчёт |
+
+```mermaid
+flowchart LR
+    Personal["Личный контур<br/>Telegram, Calendar, Obsidian"] --> Ops["ops_db<br/>отчёты, задачи, usage"]
+    Customer["Клиентский контур<br/>leads/support"] --> Ops
+    Ops --> Dashboard["Dashboard"]
+    Ops --> Backup["Backup / restore-test"]
+    Customer --> Backup
+    Personal --> Backup
+```
+
+Секреты не документируются и не коммитятся. В README допустимы только имена
+переменных окружения, но не значения.
+
+---
+
+## 5. Агенты и роли
+
+| Агент | Тип | Что делает | Статус/особенности |
 |---|---|---|---|
-| **Emilia (orchestrator)** | Главный ассистент: принимает цели, вызывает инструменты, ведёт диалог | 24/7 · `ai.orchestrator` | Telegram + reports |
-| **Chief of Staff** | Дайджесты команды, сводки | 9:00 и 19:00 · `chief.of.staff` | Telegram + reports |
-| **Email Watchdog** | Фильтрует входящую почту, помечает важное | 8:00 · `email.watchdog` | Telegram |
-| **Knowledge Curator** | Ведёт базу знаний (Qdrant/Obsidian) | 24/7 · `knowledge.curator` | Obsidian + reports |
-| **Task Sync** | Синхронит задачи и KPI (WEEEK/Taiga) | 10:00 (cron) | reports |
-| **Calendar Agent** | Проверяет и синхронит календарь | 8:30 (cron) | Telegram |
-| **Lead Manager** | CRM: лиды, follow-up, отчёт по продажам | 10:00 + 11:00 (cron) | reports |
-| **Email Agent** | Письма лидам | по запросу | reports |
-| **Support Bot** | Поддержка клиентов | 24/7 · `amori.support` | customer_db |
+| `orchestrator` / Emilia | 24/7 | Главный Telegram-ассистент, роутинг инструментов, ответы, файлы, фото, голос | Работает |
+| `chief_of_staff` | расписание | Утренний/вечерний дайджест переписок | Работает |
+| `email_watchdog` | расписание | Смотрит почту и выделяет важное | Один IMAP аккаунт требует новый пароль |
+| `calendar_agent` | cron | Ищет встречи, безопасно синхронизирует календарь | Нужен новый Google OAuth token |
+| `knowledge_curator` | 24/7 | Сохраняет заметки в Obsidian, переводит задачи для команды | Path guard включён |
+| `task_sync` | cron | WEEEK/Taiga KPI и управленческий отчёт | Иногда ловит внешние timeouts |
+| `lead_manager` | cron/on-demand | Лиды, follow-up, CRM-отчёт | WEEEK fail-soft |
+| `email_agent` | on-demand | Письма лидам | Проверяет SMTP env и claims |
+| `support_agent` | 24/7 | Поддержка клиентов, тикеты, эскалации | Клиентский контур |
+| `content_factory` | on-demand | Бриф -> текст -> визуал -> ревью -> аппрув | Не маркирует как published без реальной отправки |
+| `worker_dispatch` | 24/7 | Забирает задачи из очереди и запускает воркеров | Heartbeat ok |
+| `infra_monitor` | расписание | Проверяет контейнеры, launchd, бэкапы, диск, логи | Пишет heartbeat |
 
-### AI-команда (иерархия, из `agent_registry`)
+### Иерархия AI-команды
 
+```mermaid
+flowchart TB
+    Emilia["Emilia<br/>CEO assistant"]
+    Emilia --> Content["Content Lead"]
+    Content --> Writer["content_writer"]
+    Content --> Designer["content_designer"]
+    Content --> Reviewer["content_reviewer"]
+    Emilia --> Research["Research Lead"]
+    Research --> Web["web_researcher"]
+    Research --> Curator["knowledge_curator"]
+    Emilia --> Sales["Sales Lead"]
+    Sales --> Lead["lead_manager"]
+    Sales --> Email["email_agent"]
+    Sales --> Support["support_agent"]
+    Emilia --> Dev["Dev Lead"]
+    Dev --> DevWorker["dev_worker"]
+    Emilia --> Ops["Ops assistants"]
+    Ops --> Chief["chief_of_staff"]
+    Ops --> Watchdog["email_watchdog"]
+    Ops --> Calendar["calendar_agent"]
+    Ops --> Sync["task_sync"]
+    Ops --> Monitor["infra_monitor"]
 ```
-Emilia (оркестратор / CEO-ассистент)
-├── Саша — Content Lead (тимлид контента)
-│   ├── Копирайтер (content_writer) — тексты, посты, лендинги
-│   ├── Дизайнер (content_designer) — визуальные брифы + промпты картинок
-│   └── Ревьюер (content_reviewer) — аппрув и качество
-├── Dev Lead
-│   └── Разработчик (dev_worker) — код-задачи
-├── Research Lead
-│   ├── Веб-ресёрчер (web_researcher) — сбор и синтез
-│   └── Knowledge Curator — база знаний
-├── Sales Lead
-│   ├── Lead Manager · Email Agent · Support Bot
-└── Ассистенты управления: Calendar · Chief of Staff · Email Watchdog · Task Sync · Infra Monitor
+
+---
+
+## 6. Контент-завод
+
+Пайплайн:
+
+```mermaid
+stateDiagram-v2
+    [*] --> brief
+    brief --> copy: content_writer
+    copy --> visual: content_designer
+    visual --> review: content_reviewer
+    review --> pending: saved to content_items
+    pending --> approved: Denis approves
+    pending --> rejected: Denis rejects
+    approved --> published: Telegram API success
+    approved --> approved: channel missing / delivery failed
 ```
 
-### Ops/инфра-джобы (служебные)
-
-| Джоба | Что | Когда |
-|---|---|---|
-| `ai.worker` | Диспетчер очереди — гоняет воркеров | 24/7 |
-| `ai.dashboard` | Веб-дашборд :8099 | 24/7 |
-| `ai.office` | Пиксель-офис :5070 | 24/7 |
-| `ai.monitor` | Мониторинг инфры, алерты | по расписанию |
-| `amori.backup` | Бэкап БД+Qdrant+код, off-site | 04:00 |
-| `ai.restoretest` | Тест восстановления из бэкапа | по расписанию |
-| `ai.tests` | Прогон pytest | по расписанию |
-| `ai.digest` | Дайджест | по расписанию |
+Важное правило: `published` означает только реальную успешную отправку внешним
+инструментом. Если Telegram-канал не настроен, материал остаётся `approved`, то
+есть готовым к ручной публикации.
 
 ---
 
-## 4. AI-команда: проекты и контент-завод
+## 7. Контракты качества
 
-### Проекты (любой домен: контент / ресёрч / код / операции)
-1. Нажимаешь **«+ Новый проект»** в дашборде (или говоришь Emilia в Telegram: инструмент `new_project`).
-2. `project_manager` через LLM раскладывает цель на 3–6 задач, назначает **роли** (копирайтер/дизайнер/
-   ревьюер/ресёрчер/dev/ops) и строит **зависимости** (например: копирайтер → дизайнер → ревьюер).
-3. Задачи попадают в **очередь** (`ops_db.tasks`). Диспетчер `ai.worker` атомарно разбирает их.
-4. Воркер видит результаты задач-предков (транзитивно) — ревьюер реально читает текст копирайтера.
-5. Результат каждой задачи → **отчёт** в дашборде. Прогресс — на «🗂 Доске задач» (kanban).
+Система содержит детерминированные проверки, а не только промпты.
 
-### Контент-завод (для продаж)
-Конвейер: **бриф → текст (копирайтер) → визуальный бриф+промпт (дизайнер) → ревью → [твой аппрув] → публикация.**
-1. Нажимаешь **«+ Создать контент»** (или Emilia: `make_content`). Указываешь бриф, канал
-   (telegram/vk/email/landing/ad) и формат (post/email/ad_creative/landing).
-2. Контент генерируется и появляется в разделе **«🏭 Контент-завод»** со статусом *pending* +
-   превью прилетает в Telegram.
-3. Жмёшь **«✅ Опубликовать»** (или «✗ Отклонить»). Публикация: реальная в Telegram-канал, если задан
-   `TELEGRAM_CHANNEL_ID`; иначе сохраняется как «готово к публикации».
+| Проверка | Что предотвращает |
+|---|---|
+| Product claims guard | Не даёт обещать real-time GPS, точность, здоровье/активность, геозоны, готовое приложение, гарантию |
+| External action guard | Ловит “опубликовано/отправлено/внедрено” без результата инструмента |
+| HITL | Публикации и исходящие действия требуют подтверждения |
+| Calendar safe mode | Без точной даты/времени/причины событие не добавляется автоматически |
+| Obsidian path guard | LLM не может записать файл вне vault |
+| CRM fail-soft | Лид сохраняется локально даже при падении WEEEK |
+| Restore-test | Бэкап считается полезным только если восстановился |
 
----
+Проверки:
 
-## 5. Три интерфейса — что где смотреть
-
-| Интерфейс | Адрес | Для чего |
-|---|---|---|
-| **Дашборд (пульт)** | http://localhost:8099 | Главное место. Проекты, контент-завод (с аппрувом), доска задач, лента отчётов, иерархия команды, агенты + настройки (модель/бюджет по клику) |
-| **Пиксель-офис** | http://localhost:5070 | Живой «офис»: агенты-персонажи по отделам работают за столами, оживают когда есть активность |
-| **Ambient-офис** | http://localhost:8099/office | Лёгкая витрина: крылья команды + пульс проектов/контента + лента отчётов |
-
-**Куда смотреть в первую очередь:** дашборд :8099. Там всё — что делает команда, что готово, что
-ждёт твоего аппрува.
-
----
-
-## 6. Данные и бэкапы
-
-**Базы (Postgres в контейнере `ai_postgres`):**
-- `ops_db` — операционка: проекты, задачи, отчёты, контент, реестр команды, учёт LLM, heartbeat.
-- `customer_db` — клиентские данные (лиды, тикеты) · контур 152-ФЗ.
-- `agents` — память/история агентов, Langfuse.
-- `n8n` — workflow-движок.
-
-Плюс **Qdrant** (векторная память) и **Redis**.
-
-**Бэкап (`amori.backup`, 04:00):** дампит все 4 БД + Qdrant-снапшоты + код агентов + Obsidian,
-проверяет целостность (gzip -t), копирует **off-site на внешний диск** (переживает отказ SSD).
-Проверить последний прогон: дашборд → «Инфра-прогоны», или
-`docker exec ai_postgres psql -U agent_user -d ops_db -tAc "SELECT status,ts FROM infra_runs WHERE kind='backup' ORDER BY ts DESC LIMIT 1"`.
-
----
-
-## 7. Если что-то сломалось
-
-**Где логи:** `~/ai-infra/agents/*.log` (агенты), `~/ai-infra/backups/backup.log` (бэкап),
-`~/ai-infra/agents/worker.log` (диспетчер воркеров).
-
-**Перезапустить агента:**
 ```bash
-launchctl kickstart -k gui/$(id -u)/<label>     # напр. ai.worker, ai.dashboard, ai.office
+cd ~/ai-infra/agents
+/opt/anaconda3/bin/python3 -m pytest tests -q
+/opt/anaconda3/bin/python3 audit_agents.py
+/opt/anaconda3/bin/python3 audit_agent_outputs.py --limit 80
 ```
 
-**Проверить, кто жив:** `launchctl list | grep -E "ai\.|amori|chief|email|knowledge"`
-(колонка PID = работает сейчас; exit = код последнего завершения).
+---
 
-**Типичное:**
-- **Groq `SSL: UNEXPECTED_EOF`** в логах — транзиентная ошибка, срабатывает повтор. Норма, не паникуй.
-- **email_watchdog exit=1 / `AUTHENTICATIONFAILED`** — протух Gmail app-password. Нужно перегенерировать
-  пароль приложения Google и обновить `TELEGRAM`/почтовые креды в `~/ai-infra/agents/.env`.
-- **Дашборд/офис показывает старое** — браузер закэшировал страницу. Жёсткая перезагрузка (Cmd+Shift+R).
-- **Очередь стоит** — проверь `ai.worker` (жив ли) и heartbeat `worker_dispatch` в дашборде.
+## 8. Где смотреть
+
+| Место | Что смотреть |
+|---|---|
+| `http://localhost:8099` | Главный dashboard: проекты, отчёты, content factory, система |
+| `http://localhost:8099/docs` | Этот документ |
+| `http://localhost:5070` | Pixel office |
+| `~/ai-infra/agents/*.log` | Логи агентов |
+| `~/ai-infra/backups/restore_test.log` | Проверка восстановления |
+| `ops_db.infra_heartbeats` | Пульс компонентов |
+| `ops_db.infra_runs` | История monitor/backup/restore/test |
 
 ---
 
-## 8. Лимиты и что требует ключей
+## 9. Быстрые команды
 
-Система честно помечает, где пока заглушка, и оставляет хук на будущее:
-- **Картинки** — дизайнер выдаёт визуальный бриф + готовый промпт, но реальной генерации нет
-  (нужен ComfyUI на GPU-ноде или платный image-API с ключом).
-- **Публикация контента** — реальная в Telegram-канал при `TELEGRAM_CHANNEL_ID`; VK нужен VK-токен;
-  иначе контент сохраняется как «готово к публикации».
-- **Живой веб ресёрчеру** — пока работает на знаниях модели; для актуальных данных нужен search-API.
-- **dev-воркер** — выдаёт код/тесты текстом, репозиторий не правит (OpenCode/Aider не подключён).
+```bash
+# Статус dashboard API
+curl -s http://localhost:8099/api/state
 
-**Бюджет:** платный API ограничен месячным потолком (по умолчанию 2500₽), настраивается в дашборде.
-Бесплатный Groq/локальный Ollama — без лимита. Текущий расход виден на главной дашборда.
+# Тесты
+cd ~/ai-infra/agents
+/opt/anaconda3/bin/python3 -m pytest tests -q
+
+# Аудит агентов
+/opt/anaconda3/bin/python3 audit_agents.py
+
+# Restore-test
+cd ~/ai-infra/backups && ./restore_test.sh
+
+# Перезапуск долгоживущих сервисов
+launchctl kickstart -k gui/$(id -u)/ai.orchestrator
+launchctl kickstart -k gui/$(id -u)/ai.worker
+launchctl kickstart -k gui/$(id -u)/ai.dashboard
+launchctl kickstart -k gui/$(id -u)/knowledge.curator
+launchctl kickstart -k gui/$(id -u)/amori.support
+```
 
 ---
 
-*Команда работает. Ставь цели — собирай результаты в дашборде. 🚀*
+## 10. Что улучшить дальше
+
+| Приоритет | Действие | Польза |
+|---|---|---|
+| P0 | Обновить Google Calendar OAuth token | Вернуть безопасную календарную автоматизацию |
+| P0 | Обновить app-password проблемного email-ящика | Вернуть полный email digest |
+| P1 | Очистить/пометить старые плохие reports | Сделать аудит чище |
+| P1 | Добавить ротацию больших Telegram traceback logs | Снизить шум логов |
+| P1 | Подключить реальную генерацию изображений | Превратить visual briefs в готовые ассеты |
+| P2 | Подключить search API для web_researcher | Сделать ресёрч актуальным |
+| P2 | Подключить supervised code-apply для dev_worker | Перевести dev-агента из “советника” в “исполнителя под контролем” |
+| P2 | Вынести секреты в secret backend | Уменьшить риск локальных env-файлов |
+
+---
+
+## 11. Главное правило эксплуатации
+
+Если агент говорит, что что-то сделал, это должно подтверждаться либо записью в
+БД, либо результатом внешнего инструмента, либо логом. Всё остальное считается
+черновиком, рекомендацией или планом.
