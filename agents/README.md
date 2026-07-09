@@ -182,10 +182,12 @@ Status meanings:
 |---|---|
 | `pending` | AI generated content is waiting for review |
 | `approved` | Human approved, but no real external delivery has happened |
+| `ready` | Channel is not configured; content is ready for manual publishing |
 | `published` | Telegram API accepted the send |
 | `rejected` | Human rejected |
 
-Missing `TELEGRAM_CHANNEL_ID` leaves content `approved`, not `published`.
+Missing `TELEGRAM_CHANNEL_ID` moves content to `ready`, not `published`.
+Delivery failure leaves content `approved` for retry.
 
 ---
 

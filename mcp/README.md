@@ -53,8 +53,9 @@ heavy LLM dependencies into the JSON-RPC process.
 | `list_content()` | read | Lists recent content items and statuses |
 
 `approve_content(id)` does not guarantee publication. If Telegram is not
-configured or delivery fails, the item remains `approved`; it becomes
-`published` only after the Telegram API accepts the send.
+configured, the item becomes `ready` for manual publication. If delivery fails,
+it remains `approved` for retry. It becomes `published` only after the Telegram
+API accepts the send.
 
 ### Status And Data
 

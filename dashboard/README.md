@@ -17,7 +17,7 @@ Verified: **2026-07-09**.
 | Section | Real data source | Purpose |
 |---|---|---|
 | Agents | launchd, cron metadata, `ops_db.llm_usage` | Status, PID, schedule, model, last calls |
-| Content factory | `ops_db.content_items` | Pending/approved/published/rejected drafts |
+| Content factory | `ops_db.content_items` | Pending/approved/ready/published/rejected drafts |
 | Task board | `ops_db.tasks` | Queued, running, failed, done work |
 | Reports feed | `ops_db.reports` | Recent agent outputs and alerts |
 | Team | Static hierarchy + registry data | Who does what in the AI team |
@@ -84,13 +84,15 @@ stateDiagram-v2
     pending --> approved: Denis approves
     pending --> rejected: Denis rejects
     approved --> published: Telegram API success
-    approved --> approved: missing channel / delivery error
+    approved --> ready: missing channel
+    approved --> approved: delivery error / retry
 ```
 
 | Status | Meaning |
 |---|---|
 | `pending` | AI draft is waiting for review |
 | `approved` | Human accepted it; external delivery may still be absent |
+| `ready` | Channel is not configured; publish manually or retry after setup |
 | `published` | Telegram API accepted the send |
 | `rejected` | Human rejected the draft |
 

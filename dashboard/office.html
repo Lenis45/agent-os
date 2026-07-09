@@ -150,8 +150,8 @@ function projPulse(s){
   return `активных: <b>${act}</b><br>${lines}`;
 }
 function contPulse(s){
-  const c=s.content||[]; const pend=c.filter(x=>x.status==='pending').length; const pub=c.filter(x=>x.status==='published').length;
-  return `на аппрув: <b>${pend}</b><br>опубликовано: <b>${pub}</b>`;
+  const c=s.content||[]; const pend=c.filter(x=>x.status==='pending').length; const ready=c.filter(x=>x.status==='ready').length; const pub=c.filter(x=>x.status==='published').length;
+  return `на аппрув: <b>${pend}</b><br>ручная публикация: <b>${ready}</b><br>опубликовано: <b>${pub}</b>`;
 }
 function taskPulse(s){
   const t=s.tasks||[]; const run=t.filter(x=>x.status==='running'||x.status==='claimed').length;

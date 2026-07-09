@@ -38,6 +38,17 @@ PG = dict(
     password=os.getenv("POSTGRES_PASSWORD"),
 )
 
+# Для sql_read желательно ОТДЕЛЬНЫЙ пользователь БД с правами только SELECT:
+#   CREATE ROLE agent_ro LOGIN PASSWORD '...';
+#   GRANT CONNECT ON DATABASE ops_db, customer_db TO agent_ro;
+#   GRANT USAGE ON SCHEMA public TO agent_ro;
+#   GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_ro;
+# Если он задан в .env — используем его; иначе тот же PG, но транзакция READ ONLY (см. _rows).
+PG_RO = dict(PG)
+if os.getenv("OPS_DB_RO_USER"):
+    PG_RO["user"] = os.getenv("OPS_DB_RO_USER")
+    PG_RO["password"] = os.getenv("OPS_DB_RO_PASSWORD")
+
 mcp = FastMCP("amori")
 
 
@@ -49,10 +60,16 @@ def _jsonable(v):
     return v
 
 
-def _rows(db: str, q: str, params=None) -> list:
+def _rows(db: str, q: str, params=None, readonly: bool = False) -> list:
+    # readonly=True: отдельный RO-пользователь (если задан) + транзакция READ ONLY.
+    # READ ONLY на уровне PostgreSQL блокирует и data-modifying CTE
+    # (WITH ... AS (INSERT/UPDATE/DELETE ... RETURNING ...)), которые проходят строковую проверку.
     conn = psycopg2.connect(dbname=db, connect_timeout=5,
-                            options="-c statement_timeout=8000", **PG)
+                            options="-c statement_timeout=8000",
+                            **(PG_RO if readonly else PG))
     try:
+        if readonly:
+            conn.set_session(readonly=True)
         cur = conn.cursor()
         cur.execute(q, params)
         cols = [d[0] for d in (cur.description or [])]
@@ -191,7 +208,7 @@ def sql_read(db: str, query: str) -> list:
     if not re.search(r"\blimit\b", q, re.I):
         q += " LIMIT 200"
     try:
-        return _rows(db, q)
+        return _rows(db, q, readonly=True)
     except Exception as e:
         return [{"error": str(e)[:300]}]
 

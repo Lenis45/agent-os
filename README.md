@@ -304,12 +304,13 @@ The content factory is intentionally conservative:
 |---|---|
 | `pending` | AI draft exists, waiting for human review |
 | `approved` | Human accepted it, but no real external delivery has happened yet |
+| `ready` | External channel is not configured; publish manually or retry later |
 | `published` | Telegram API actually accepted the send |
 | `rejected` | Human rejected it |
 
-If `TELEGRAM_CHANNEL_ID` is missing or delivery fails, content remains
-`approved` for manual publication/retry. The system no longer labels this as
-published.
+If `TELEGRAM_CHANNEL_ID` is missing, content becomes `ready` for manual
+publication. If a configured delivery attempt fails, content remains `approved`
+for retry. The system no longer labels either case as published.
 
 ---
 
@@ -347,6 +348,36 @@ cd ~/ai-infra/agents
 | Pixel office | `http://localhost:5070` | Visual agent office |
 | Telegram | private bots | Founder command surface and support |
 | MCP | `mcp/` | Read-only analytics/tools for Codex, Claude, Hermes |
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/Lenis45/agent-os
+cd agent-os
+
+# 1. Infrastructure
+docker compose up -d
+
+# 2. Python deps (anaconda recommended)
+pip install -r requirements.txt
+
+# 3. MCP server deps
+cd mcp && python -m venv .venv && .venv/bin/pip install "mcp[cli]" psycopg2-binary python-dotenv
+
+# 4. Copy and fill env
+cp agents/.env.example agents/.env   # add your Groq key, Telegram token, etc.
+
+# 5. Init databases
+cd agents && python ops_store.py
+
+# 6. Run tests
+python -m pytest tests/ -q
+
+# 7. Load launchd jobs (macOS)
+# See docs/RUNBOOK.md for launchctl commands
+```
 
 ---
 

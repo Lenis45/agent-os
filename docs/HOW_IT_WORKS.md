@@ -217,12 +217,14 @@ stateDiagram-v2
     pending --> approved: Denis approves
     pending --> rejected: Denis rejects
     approved --> published: Telegram API success
-    approved --> approved: channel missing / delivery failed
+    approved --> ready: channel missing
+    approved --> approved: delivery failed / retry
 ```
 
 Важное правило: `published` означает только реальную успешную отправку внешним
-инструментом. Если Telegram-канал не настроен, материал остаётся `approved`, то
-есть готовым к ручной публикации.
+инструментом. Если Telegram-канал не настроен, материал переходит в `ready`,
+то есть готов к ручной публикации. Если отправка упала, материал остаётся
+`approved`, чтобы его можно было повторить.
 
 ---
 

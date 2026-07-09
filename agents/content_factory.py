@@ -6,8 +6,9 @@ pending -> аппрув Дениса -> реальная отправка, ес�
 
 Аппрув-гейт: кнопки в дашборде (:8099) + превью в Telegram (одностороннее).
 Статус `published` ставится только после подтверждённого результата внешнего
-инструмента. Если `TELEGRAM_CHANNEL_ID` не задан или Telegram вернул ошибку,
-контент остаётся `approved` и считается готовым к ручной публикации/повтору.
+инструмента. Если `TELEGRAM_CHANNEL_ID` не задан, контент становится `ready`
+для ручной публикации. Если Telegram вернул ошибку, контент остаётся
+`approved` и доступен для повтора.
 
 CLI:
   python3 content_factory.py "бриф" [channel] [kind]   — создать на аппрув
@@ -24,7 +25,6 @@ import ops_store
 import notify
 import report as report_mod
 import worker_handlers
-import agent_contracts
 
 CHANNELS = {"telegram", "vk", "email", "landing", "ad"}
 KINDS = {"post", "email", "ad_creative", "landing"}
@@ -142,24 +142,35 @@ def publish(cid):
     item = get(cid)
     if not item:
         return {"ok": False, "error": "not found"}
-    ok, info = _do_publish(item["channel"], item)
-    real_publish = agent_contracts.is_real_publish_result(ok, info)
-    if real_publish:
-        _set_status(cid, "published", "published_at")
-    else:
-        # Нет реальной отправки во внешний канал → не помечаем published.
+    result, info = _do_publish(item["channel"], item)
+    if result == "sent":
+        _set_status(cid, "published", "published_at")   # реально отправлено во внешний канал
+    elif result == "manual":
+        _set_status(cid, "ready")                        # канал не настроен → готово к РУЧНОЙ публикации
+    else:  # "failed" — отправка упала → оставляем approved для повтора
         _set_status(cid, "approved")
+    titles = {"sent": "Опубликовано", "manual": "Готово к ручной публикации", "failed": "Ошибка публикации"}
     report_mod.report(
         "content_factory", kind="content",
-        title=f"{'Опубликовано' if real_publish else 'Готово к ручной публикации'} #{cid} ({item['channel']})",
+        title=f"{titles[result]} #{cid} ({item['channel']})",
         summary=info[:300], project_id=item.get("project_id"),
-        meta={"content_id": cid, "channel": item["channel"], "ok": ok, "real_publish": real_publish}, telegram=True,
+        meta={"content_id": cid, "channel": item["channel"], "result": result}, telegram=True,
     )
-    print(f"[content_factory] #{cid} publish ok={ok} real={real_publish}: {info}")
-    return {"ok": ok, "published": real_publish, "info": info}
+    print(f"[content_factory] #{cid} publish result={result}: {info}")
+    return {
+        "ok": result != "failed",
+        "result": result,
+        "sent": result == "sent",
+        "published": result == "sent",
+        "info": info,
+    }
 
 
 def _do_publish(channel, item):
+    # Возвращает (result, info): result ∈ {"sent","failed","manual"}.
+    #   "sent"   — реально отправлено во внешний канал (→ статус published);
+    #   "manual" — канал не настроен, материал готов к РУЧНОЙ отправке (→ статус ready, НЕ published);
+    #   "failed" — попытка отправки упала (→ остаётся approved, можно повторить).
     body = item.get("body") or ""
     if channel == "telegram":
         chan = os.getenv("TELEGRAM_CHANNEL_ID")
@@ -171,13 +182,13 @@ def _do_publish(channel, item):
                 req = urllib.request.Request(url, data=data,
                                              headers={"Content-Type": "application/json"})
                 urllib.request.urlopen(req, timeout=10)
-                return True, f"отправлено в Telegram-канал {chan}"
+                return "sent", f"отправлено в Telegram-канал {chan}"
             except Exception as e:
-                return False, f"ошибка публикации в TG: {e}"
-        return False, "TG-канал не настроен (TELEGRAM_CHANNEL_ID) — осталось approved для ручной публикации"
+                return "failed", f"ошибка публикации в TG: {e}"
+        return "manual", "TG-канал не настроен (TELEGRAM_CHANNEL_ID) — готово к ручной публикации"
     if channel == "vk":
-        return False, "VK-токен не настроен — осталось approved для ручной публикации"
-    return False, f"{channel}: осталось approved для ручной отправки"
+        return "manual", "VK-токен не настроен — готово к ручной публикации"
+    return "manual", f"{channel}: готово к ручной публикации (ручная отправка)"
 
 
 def recent(limit=20):

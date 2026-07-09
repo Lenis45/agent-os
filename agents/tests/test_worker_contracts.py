@@ -64,8 +64,8 @@ def test_report_audit_flags_fake_publication_and_product_claim():
 
 def test_content_factory_does_not_mark_unconfigured_channel_as_real_publish(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CHANNEL_ID", raising=False)
-    ok, info = content_factory._do_publish("telegram", {"body": "hello"})
-    assert ok is False
+    result, info = content_factory._do_publish("telegram", {"body": "hello"})
+    assert result == "manual"
     assert "ручной публикации" in info
 
 

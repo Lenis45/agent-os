@@ -138,7 +138,7 @@ def reject_content(content_id: int) -> str:
 
 
 def list_content() -> list:
-    """Получить список контента контент-завода со статусами: pending/approved/published/rejected."""
+    """Получить список контента контент-завода со статусами: pending/approved/ready/published/rejected."""
     return _rows("ops_db",
         "SELECT id, channel, kind, status, "
         "COALESCE(NULLIF(title,''), left(body,60)) title, "

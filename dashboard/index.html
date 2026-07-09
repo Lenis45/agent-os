@@ -120,7 +120,7 @@ async function newProject(){const goal=prompt('Цель проекта для AI
 
 function contentPanel(s){
   const items=s.content||[];
-  const stCls=st=>({pending:'loaded',approved:'running',published:'ok',rejected:'down'}[st]||'loaded');
+  const stCls=st=>({pending:'loaded',approved:'running',ready:'loaded',published:'ok',rejected:'down'}[st]||'loaded');
   return `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">${items.map(c=>`
     <div class="panel" onclick='openContent(${JSON.stringify(c)})' style="cursor:pointer">
       <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
@@ -148,7 +148,7 @@ function openContent(c){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h2 style="margin:0;font-size:16px">🏭 Контент #${c.id} · ${esc(c.kind)}/${esc(c.channel)}</h2>
       <span style="cursor:pointer;color:var(--muted);font-size:20px" onclick="closeAgent()">✕</span></div>
-    <div class="ag-meta" style="margin-bottom:10px"><span class="st ${({pending:'loaded',approved:'running',published:'ok',rejected:'down'}[c.status])||'loaded'}">${esc(c.status)}</span><span>${esc(c.created||'')}</span></div>
+    <div class="ag-meta" style="margin-bottom:10px"><span class="st ${({pending:'loaded',approved:'running',ready:'loaded',published:'ok',rejected:'down'}[c.status])||'loaded'}">${esc(c.status)}</span><span>${esc(c.created||'')}</span></div>
     <div style="font-size:13px;white-space:pre-wrap;max-height:40vh;overflow:auto;background:var(--panel2);padding:12px;border-radius:8px">${esc(c.body||'')}</div>
     ${c.image_brief?`<div style="margin-top:10px;font-size:11px;color:var(--muted);white-space:pre-wrap;max-height:20vh;overflow:auto">🎨 ${esc(c.image_brief)}</div>`:''}
     ${c.status==='pending'?`<div style="display:flex;gap:8px;margin-top:14px">
