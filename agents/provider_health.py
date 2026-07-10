@@ -135,11 +135,11 @@ def main():
 
     L = [f"🩺 Здоровье LLM-провайдеров | {today}", ""]
     L.append("━━━ ОСНОВНЫЕ (мозг/воркеры) ━━━")
-    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← дефолт мозга" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
-    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← фолбэк + воркеры" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
+    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← preferred, если есть кредит" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
+    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← активный фолбэк + воркеры" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
 
     L.append("\n━━━ ОТКЛЮЧЕНЫ (опциональные, не используются) ━━━")
-    L.append("⏸ Qwen / GLM / Kimi — веб-прокси выключены намеренно; мозг на DeepSeek. Чинить не нужно.")
+    L.append("⏸ Qwen / GLM / Kimi — optional web-proxy выключены намеренно; чинить не нужно.")
 
     L.append("\n━━━ ЛОКАЛЬНЫЕ / ПРОЧЕЕ ━━━")
     L.append(f"{ol[0]} Ollama/Gemma (ПК) — {ol[1]}" + (f"\n   ↳ {ol[2]}" if ol[2] else ""))
@@ -147,9 +147,13 @@ def main():
 
     brain_ok = ds[0] == "🟢" or gr[0] == "🟢"
     L.append("")
-    L.append("✅ Мозг работает: DeepSeek + Groq-фолбэк." if brain_ok
-             else "🔴 ВНИМАНИЕ: и DeepSeek, и Groq недоступны — мозг лежит!")
-    L.append("ℹ️ DeepSeek — временная бесплатная акция OpenModel: следи за остатком кредита. Qwen выключен намеренно.")
+    if ds[0] == "🟢":
+        L.append("✅ Мозг работает через DeepSeek, Groq остаётся фолбэком.")
+    elif gr[0] == "🟢":
+        L.append("✅ Мозг работает через Groq-фолбэк; DeepSeek сейчас не основной из-за статуса выше.")
+    else:
+        L.append("🔴 ВНИМАНИЕ: и DeepSeek, и Groq недоступны — мозг лежит!")
+    L.append("ℹ️ DeepSeek/OpenModel зависит от кредита и лимитов. Qwen/GLM/Kimi выключены намеренно как optional web-proxy.")
 
     L.append("\n━━━ ЧТО ЕЩЁ МОЖНО ПОДКЛЮЧИТЬ (нужен ключ) ━━━")
     L.append("• Официальные API (стабильно): Anthropic Claude · OpenAI GPT · Google Gemini · DeepSeek official · OpenRouter (агрегатор 300+ моделей)")
@@ -164,6 +168,11 @@ def main():
     for comp, s in hb.items():
         try:
             ops_store.heartbeat(comp, "ok" if s[0] == "🟢" else "warn", {"status": s[1]})
+        except Exception:
+            pass
+    for comp in ("llm_qwen", "llm_glm", "llm_kimi"):
+        try:
+            ops_store.heartbeat(comp, "disabled", {"status": "optional proxy disabled intentionally"})
         except Exception:
             pass
 
