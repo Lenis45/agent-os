@@ -1,0 +1,97 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": true,
+  "username": "denis",
+  "server": {
+    "hostname": "127.0.0.1"
+  },
+  "plugin": [
+    "@dietrichgebert/ponytail"
+  ],
+  "compaction": {
+    "auto": true,
+    "reserved": 10000
+  },
+  "watcher": {
+    "ignore": [
+      ".git/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      ".venv/**",
+      "venv/**",
+      "__pycache__/**",
+      "backups/**",
+      "logs/**"
+    ]
+  },
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow"
+    },
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "pwd": "allow",
+      "ls *": "allow",
+      "find *": "allow",
+      "rg *": "allow",
+      "grep *": "allow",
+      "sed *": "allow",
+      "cat *": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git reset --hard*": "deny",
+      "git clean -fd*": "ask",
+      "rm -rf *": "deny",
+      "sudo *": "ask",
+      "git commit *": "ask",
+      "git push *": "ask"
+    },
+    "external_directory": {
+      "~/.agents/skills/**": "allow",
+      "~/.config/opencode/**": "allow",
+      "~/ai-infra/**": "ask",
+      "~/github/**": "ask",
+      "~/Documents/**": "ask"
+    }
+  },
+  "mcp": {
+    "amori": {
+      "type": "local",
+      "command": [
+        "/Users/denis/ai-infra/mcp/run.sh"
+      ],
+      "enabled": true
+    },
+    "memory": {
+      "type": "local",
+      "command": [
+        "/Users/denis/.hermes/node/bin/mcp-server-memory"
+      ],
+      "environment": {
+        "MEMORY_FILE_PATH": "/Users/denis/.mcp-shared/memory.json"
+      },
+      "enabled": true
+    },
+    "sequential-thinking": {
+      "type": "local",
+      "command": [
+        "/Users/denis/.hermes/node/bin/mcp-server-sequential-thinking"
+      ],
+      "enabled": true
+    },
+    "fetch": {
+      "type": "local",
+      "command": [
+        "/Users/denis/ai-infra/mcp/run-fetch.sh"
+      ],
+      "enabled": false
+    }
+  }
+}
