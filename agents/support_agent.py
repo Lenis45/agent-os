@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,6 +29,7 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 SUPPORT_TOKEN = os.getenv("SUPPORT_BOT_TOKEN")
 MAIN_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DENIS_ID = os.getenv("TELEGRAM_MY_ID")
+MAX_TELEGRAM_ANSWER_CHARS = 650
 
 # ===== БАЗА ЗНАНИЙ О ПРОДУКТЕ =====
 PRODUCT_KNOWLEDGE = """
@@ -45,7 +47,9 @@ PRODUCT_KNOWLEDGE = """
 
 ПРАВИЛА ОБЩЕНИЯ:
 - Отвечай только на русском языке
-- Будь дружелюбным и помогающим
+- Будь дружелюбным, спокойным и кратким
+- Пиши как в Telegram-чате: 2–5 коротких предложений, без markdown, без **жирного**, без заголовков
+- Если вопрос большой — сначала дай короткое резюме, потом один понятный следующий шаг
 - Если не знаешь точного ответа — честно скажи и предложи соединить с командой
 - Не выдумывай цены, функции или сроки если не уверен
 - Собирай обратную связь и пожелания — они важны для развития продукта
@@ -232,6 +236,35 @@ def send_to_customer(customer_id: str, text: str):
 
 # ===== AI АГЕНТ =====
 
+def normalize_telegram_answer(text: str, max_chars: int = MAX_TELEGRAM_ANSWER_CHARS) -> str:
+    """Clean LLM output for a natural Telegram chat reply."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)
+    s = re.sub(r"__(.*?)__", r"\1", s, flags=re.S)
+    s = re.sub(r"`([^`]*)`", r"\1", s)
+    cleaned = []
+    for line in s.splitlines():
+        line = line.strip()
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^[*_]{1,3}\s*", "", line)
+        line = re.sub(r"\s{2,}", " ", line)
+        if line:
+            cleaned.append(line)
+    s = "\n".join(cleaned)
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+    if not s:
+        return "Передам вопрос команде Amori, чтобы вам ответили точнее."
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars].rstrip()
+    sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if sentence_end >= max_chars * 0.55:
+        cut = cut[:sentence_end + 1]
+    else:
+        cut = cut.rstrip(" ,;:") + "…"
+    return cut
+
+
 def ai_respond(message: str, history: list) -> dict:
     from groq import Groq
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -247,7 +280,7 @@ def ai_respond(message: str, history: list) -> dict:
         pass
 
     system_prompt = PRODUCT_KNOWLEDGE + faq_context + """\n
-Верни ТОЛЬКО валидный JSON без markdown:
+Верни ТОЛЬКО валидный JSON без markdown. answer — до 650 символов:
 {"answer":"ответ","should_escalate":false,"confidence":0.9,"save_to_faq":false,"faq_question":null}
 
 should_escalate=true: не знаешь ответа, недовольный клиент, просит живого человека.
@@ -262,7 +295,7 @@ save_to_faq=true: типичный вопрос с хорошим ответом
     try:
         resp = llm.groq_chat(
             client, "support_agent", messages,
-            model=llm.DEFAULT_GROQ_MODEL, temperature=0.3, max_tokens=600,
+            model=llm.DEFAULT_GROQ_MODEL, temperature=0.25, max_tokens=260,
         )
         result = resp.choices[0].message.content
         data = llm.parse_json(result)
@@ -271,12 +304,13 @@ save_to_faq=true: типичный вопрос с хорошим ответом
         answer = str(data.get("answer") or "")
         if agent_contracts.output_issues(answer):
             data["answer"] = (
-                "Пока не хочу обещать неподтверждённые функции. Продукт находится в разработке, "
-                "а точные параметры GPS, приложения, цены и сроков команда ещё уточняет. "
-                "Могу передать ваш вопрос команде, чтобы вам ответили точнее."
+                "Пока не хочу обещать неподтверждённые функции. Amori ещё в разработке, "
+                "поэтому точные параметры продукта команда подтверждает отдельно. "
+                "Передам ваш вопрос, чтобы ответили точнее."
             )
             data["should_escalate"] = True
             data["confidence"] = min(float(data.get("confidence") or 0.0), 0.4)
+        data["answer"] = normalize_telegram_answer(data.get("answer", ""))
         if data.get("save_to_faq") and data.get("faq_question"):
             remember(
                 f"Q: {data['faq_question']}\nA: {data['answer']}",
@@ -286,7 +320,11 @@ save_to_faq=true: типичный вопрос с хорошим ответом
         return data
     except Exception as e:
         log.error(f"AI error: {e}")
-        return {"answer": "Извините, произошла ошибка. Передаю вопрос команде.", "should_escalate": True, "confidence": 0}
+        return {
+            "answer": "Не получилось быстро ответить. Передам вопрос команде Amori.",
+            "should_escalate": True,
+            "confidence": 0,
+        }
 
 # ===== TELEGRAM HANDLERS =====
 
@@ -294,10 +332,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome = (
         f"Привет, {user.first_name}! 👋\n\n"
-        f"Добро пожаловать в поддержку Amori — умных ошейников для ваших питомцев.\n\n"
-        f"Я AI-ассистент и помогу ответить на ваши вопросы. "
-        f"Просто напишите что вас интересует!\n\n"
-        f"Если понадоблюсь живой человек — просто напишите «хочу поговорить с командой»"
+        f"Я помощник Amori. Отвечу на вопросы по продукту и передам команде всё, "
+        f"где нужен живой ответ.\n\n"
+        f"Напишите, что вас интересует."
     )
     await update.message.reply_text(welcome)
 
@@ -312,14 +349,14 @@ async def handle_customer_message(update: Update, context: ContextTypes.DEFAULT_
     save_support_message(ticket_id, "customer", text)
     history = get_ticket_history(ticket_id)
 
-    await update.message.reply_text("⏳ Обрабатываю ваш запрос...")
+    await update.message.reply_text("Секунду, посмотрю.")
 
     loop = asyncio.get_event_loop()
     response_data = await loop.run_in_executor(
         _executor, lambda: ai_respond(text, history)
     )
 
-    answer = response_data.get("answer", "Извините, не смог обработать запрос.")
+    answer = normalize_telegram_answer(response_data.get("answer", "Не смог обработать запрос."))
     should_escalate = response_data.get("should_escalate", False)
     confidence = response_data.get("confidence", 0.5)
 
@@ -330,22 +367,24 @@ async def handle_customer_message(update: Update, context: ContextTypes.DEFAULT_
     if should_escalate or confidence < 0.5:
         escalate_ticket(ticket_id)
         await update.message.reply_text(
-            "Я передал ваш вопрос команде Amori — они ответят в ближайшее время. "
-            "Обычно отвечаем в течение нескольких часов."
+            "Передал вопрос команде Amori. Ответим, как только сможем."
         )
         notify_denis(ticket_id, customer_name, text, is_escalation=True)
     else:
         # Уведомляем Дениса о новом сообщении (тихо)
         notify_denis(ticket_id, customer_name, text, is_escalation=False)
 
-    # Добавляем кнопку обратной связи
+    if should_escalate or confidence < 0.5:
+        return
+
+    # Добавляем короткую кнопку обратной связи
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Помогло", callback_data=f"helpful_{ticket_id}"),
             InlineKeyboardButton("❌ Нужна помощь команды", callback_data=f"escalate_{ticket_id}")
         ]
     ])
-    await update.message.reply_text("Был ли мой ответ полезным?", reply_markup=keyboard)
+    await update.message.reply_text("Ответ помог?", reply_markup=keyboard)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -368,7 +407,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_escalation=True
         )
         await query.edit_message_text(
-            "Передал вопрос команде Amori. Ответим в ближайшее время!"
+            "Передал вопрос команде Amori. Ответим, как только сможем."
         )
 
 def main():

@@ -7,6 +7,7 @@ import audit_agent_outputs
 import content_factory
 import email_agent
 import knowledge_curator
+import support_agent
 
 
 AGENTS_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -48,6 +49,23 @@ def test_support_knowledge_does_not_promise_realtime_or_alerts():
         "данные передаются в приложение в реальном времени",
     ]
     assert not any(x in src for x in forbidden)
+
+
+def test_support_answer_normalizer_removes_markdown_for_telegram():
+    raw = "**Важно:** Amori ещё в разработке.\n\n* Мы не обещаем точные сроки.\n`Команда ответит позже.`"
+    out = support_agent.normalize_telegram_answer(raw)
+    assert "**" not in out
+    assert "`" not in out
+    assert "* " not in out
+    assert "Важно:" in out
+    assert "Команда ответит позже." in out
+
+
+def test_support_answer_normalizer_shortens_long_reply():
+    raw = " ".join(["Это длинный ответ для клиента."] * 60)
+    out = support_agent.normalize_telegram_answer(raw, max_chars=180)
+    assert len(out) <= 181
+    assert out.endswith((".", "!", "?", "…"))
 
 
 def test_dev_worker_contract_forbids_fake_applied_work():
