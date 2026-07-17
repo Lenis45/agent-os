@@ -42,9 +42,20 @@ def send(text: str, level: str = "info") -> bool:
         for attempt in range(3):
             try:
                 req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=10)
-                sent = True
-                break
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                if payload.get("ok"):
+                    result = payload.get("result") or {}
+                    chat = result.get("chat") or {}
+                    print(
+                        "[notify] sent "
+                        f"message_id={result.get('message_id')} "
+                        f"chat_type={chat.get('type')} "
+                        f"chat_tail={str(chat.get('id', ''))[-4:]}"
+                    )
+                    sent = True
+                    break
+                print(f"[notify] Telegram вернул ok=false: {payload.get('description', 'unknown')}")
             except Exception as e:
                 if attempt < 2:
                     time.sleep(1.5 * (attempt + 1))

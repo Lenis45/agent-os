@@ -508,8 +508,10 @@ Taiga [разработка]: X/Y завершено (Z%)
         f"Taiga {taiga_stats.get('completion_rate', 0)}%\n\n"
     )
 
-    notify.send(header + str(result))
-    log.info("Отчёт отправлен в Telegram")
+    if notify.send(header + str(result)):
+        log.info("Отчёт отправлен в Telegram")
+    else:
+        log.warning("Отчёт сформирован, но Telegram-доставка не подтверждена")
 
 if __name__ == "__main__":
     run()

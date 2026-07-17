@@ -162,8 +162,10 @@ async def run():
 
     header = (f"📋 Chief of Staff | {period.upper()} ДАЙДЖЕСТ\n{now_str}\n\n"
               f"{stats_block}\n")
-    notify.send(header + result_str)
-    log.info("Готово")
+    if notify.send(header + result_str):
+        log.info("Готово")
+    else:
+        log.warning("Дайджест сформирован, но Telegram-доставка не подтверждена")
 
 if __name__ == "__main__":
     asyncio.run(run())

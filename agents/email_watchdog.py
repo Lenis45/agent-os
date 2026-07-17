@@ -158,8 +158,10 @@ def run():
     result = llm.run(agent, prompt, "email_watchdog")
 
     header = f"Email Watchdog | {now_str}\n{len(all_emails)} писем проверено\n\n"
-    notify.send(header + str(result))
-    log.info("Дайджест отправлен в Telegram")
+    if notify.send(header + str(result)):
+        log.info("Дайджест отправлен в Telegram")
+    else:
+        log.warning("Дайджест сформирован, но Telegram-доставка не подтверждена")
 
 if __name__ == "__main__":
     run()
