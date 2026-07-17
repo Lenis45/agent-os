@@ -148,7 +148,16 @@ Important behavior:
   <string>/opt/anaconda3/bin/python3</string>
   <string>/Users/denis/ai-infra/dashboard/server.py</string>
 </array>
+<key>EnvironmentVariables</key>
+<dict>
+  <key>INFRA_DASH_BIND</key><string>0.0.0.0</string>
+  <key>DASH_TOKEN</key><string>set-a-random-local-token</string>
+</dict>
 ```
+
+For localhost-only use, keep `INFRA_DASH_BIND=127.0.0.1`. For Tailscale access
+to `/office`, `/docs`, and `/api/state`, bind to `0.0.0.0` or the Tailscale IP
+and keep `DASH_TOKEN` set so mutating POST endpoints stay protected.
 
 Restart:
 

@@ -36,6 +36,20 @@ PORT = int(os.environ.get("INFRA_DASH_PORT", "8099"))
 BIND = os.environ.get("INFRA_DASH_BIND", "127.0.0.1")   # localhost по умолчанию; наружу — только через reverse-proxy
 DASH_TOKEN = os.environ.get("DASH_TOKEN", "")            # если задан — требуется для мутирующих POST
 ALLOW_ORIGIN = os.environ.get("INFRA_DASH_ORIGIN", f"http://localhost:{PORT}")
+ALLOW_ORIGINS = {
+    x.strip() for x in os.environ.get(
+        "INFRA_DASH_ORIGINS",
+        ",".join([
+            ALLOW_ORIGIN,
+            f"http://localhost:{PORT}",
+            f"http://127.0.0.1:{PORT}",
+            "http://localhost:5070",
+            "http://127.0.0.1:5070",
+            "http://100.66.130.21:8099",
+            "http://100.66.130.21:5070",
+        ]),
+    ).split(",") if x.strip()
+}
 PG = "ai_postgres"
 DOCKER = os.environ.get("DOCKER_BIN", "/usr/local/bin/docker")
 
@@ -342,6 +356,11 @@ def _db_summary():
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def _cors_origin(self):
+        origin = self.headers.get("Origin", "").strip()
+        if origin in ALLOW_ORIGINS:
+            return origin
+        return ALLOW_ORIGIN
     def _authed(self):
         # DASH_TOKEN не задан → полагаемся на bind 127.0.0.1 (INFRA_DASH_BIND).
         # Задан → мутирующие POST требуют совпадения токена (заголовок или ?t=).
@@ -353,13 +372,13 @@ class H(BaseHTTPRequestHandler):
         return hmac.compare_digest(got, DASH_TOKEN)
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token")
         self.send_header("Vary", "Origin"); self.end_headers()
     def _send(self, code, body, ctype="application/json"):
         self.send_response(code); self.send_header("Content-Type", ctype)
-        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Vary", "Origin"); self.end_headers()
         self.wfile.write(body.encode() if isinstance(body, str) else body)
     def do_GET(self):
