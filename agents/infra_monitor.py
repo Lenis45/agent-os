@@ -60,8 +60,10 @@ DISK_WARN_GB = int(os.getenv("DISK_WARN_GB", "10"))
 LOG_WARN_MB = int(os.getenv("LOG_WARN_MB", "20"))
 DOCKER_CACHE_WARN_GB = int(os.getenv("DOCKER_CACHE_WARN_GB", "15"))
 BACKUP_MAX_AGE_H = int(os.getenv("BACKUP_MAX_AGE_H", "26"))
+DOCKER_STARTUP_GRACE_MIN = int(os.getenv("DOCKER_STARTUP_GRACE_MIN", "45"))
 
 crit, warn, ok = [], [], []
+docker_startup_grace = False
 
 
 def sh(args, timeout=15):
@@ -70,6 +72,34 @@ def sh(args, timeout=15):
         return r.stdout.strip(), r.returncode
     except Exception:
         return "", 1
+
+
+def system_uptime_seconds():
+    out, rc = sh(["sysctl", "-n", "kern.boottime"], timeout=5)
+    if rc != 0:
+        return None
+    try:
+        import re
+        m = re.search(r"sec = (\d+)", out)
+        if not m:
+            return None
+        return max(0, time.time() - int(m.group(1)))
+    except Exception:
+        return None
+
+
+def in_docker_startup_grace():
+    uptime = system_uptime_seconds()
+    if uptime is None:
+        return False
+    return uptime < DOCKER_STARTUP_GRACE_MIN * 60
+
+
+def service_down(message):
+    if docker_startup_grace:
+        warn.append(f"⚠️ {message} — Mac недавно стартовал, Docker может ещё поднимать сервисы")
+    else:
+        crit.append(f"❌ {message}")
 
 
 def container_running(name):
@@ -139,14 +169,20 @@ def check_containers():
         if container_running(c):
             ok.append(f"container {c}")
         else:
-            crit.append(f"❌ контейнер {c} не запущен")
+            service_down(f"контейнер {c} не запущен")
 
 
 def check_services():
     for name, url in HTTP_CHECKS.items():
-        (ok.append(f"http {name}") if http_ok(url) else crit.append(f"❌ {name} недоступен ({url})"))
+        if http_ok(url):
+            ok.append(f"http {name}")
+        else:
+            service_down(f"{name} недоступен ({url})")
     for db in ("agents", "ops_db"):
-        (ok.append(f"db {db}") if db_ok(db) else crit.append(f"❌ БД {db} недоступна"))
+        if db_ok(db):
+            ok.append(f"db {db}")
+        else:
+            service_down(f"БД {db} недоступна")
 
 
 def check_agents():
@@ -221,6 +257,8 @@ def check_logs():
 
 
 def run_check():
+    global docker_startup_grace
+    docker_startup_grace = in_docker_startup_grace()
     check_containers(); check_services(); check_agents()
     check_backup(); check_disk(); check_docker_bloat(); check_logs()
 
