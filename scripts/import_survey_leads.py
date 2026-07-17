@@ -51,6 +51,21 @@ TELEGRAM_RE = re.compile(r"(?<![\w])@([A-Za-z0-9_]{3,32})")
 PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{8,}\d)")
 SURVEY_ROW_RE = re.compile(r"\[survey_row=(\d+)\]")
 CYRILLIC_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]+(?:[- ][А-ЯЁ][а-яё]+){0,2}\b")
+NAME_STOPWORDS = {
+    "telegram",
+    "tg",
+    "whatsapp",
+    "контакт",
+    "мессенджер",
+    "связь",
+    "телефон",
+    "телеграм",
+    "ватсап",
+    "владивосток",
+    "владивостоке",
+    "москва",
+    "москве",
+}
 
 
 @dataclass(frozen=True)
@@ -127,19 +142,40 @@ def extract_name_from_contact(raw: str) -> str | None:
     text = TELEGRAM_RE.sub(" ", text)
     text = PHONE_RE.sub(" ", text)
     text = re.sub(r"[^\wА-Яа-яЁё -]+", " ", text)
-    text = re.sub(r"\b(телефон|тел|telegram|tg|тг|whatsapp|ватсап|связь|контакт)\b", " ", text, flags=re.I)
+    text = re.sub(
+        r"\b(телефон|тел|telegram|tg|тг|whatsapp|ватсап|телеграм|мессенджер|связь|контакт)\b",
+        " ",
+        text,
+        flags=re.I,
+    )
     text = re.sub(r"\s+", " ", text).strip()
-    match = CYRILLIC_NAME_RE.search(text)
-    if not match:
+    for match in CYRILLIC_NAME_RE.finditer(text):
+        words = [word.strip("- ") for word in match.group(0).split() if word.strip("- ")]
+        normalized = [word.lower() for word in words]
+        if len(words) < 2:
+            continue
+        if any(word in NAME_STOPWORDS for word in normalized):
+            continue
+        return " ".join(word[:1].upper() + word[1:].lower() for word in words)
+    return None
+
+
+def extract_name_from_telegram(telegram: str | None) -> str | None:
+    if not telegram:
         return None
-    words = [word.strip("- ") for word in match.group(0).split() if word.strip("- ")]
-    if not words:
+    handle = telegram.lstrip("@")
+    if not re.fullmatch(r"[A-Za-z]+_[A-Za-z]+", handle):
         return None
-    return " ".join(word[:1].upper() + word[1:].lower() for word in words)
+    first, last = handle.split("_", 1)
+    if len(first) < 3 or len(last) < 3:
+        return None
+    if first.lower() in NAME_STOPWORDS or last.lower() in NAME_STOPWORDS:
+        return None
+    return f"{first.title()} {last.title()}"
 
 
 def lead_display_name(row_number: int, raw_contact: str, email: str | None, phone: str | None, telegram: str | None) -> tuple[str, str | None]:
-    real_name = extract_name_from_contact(raw_contact)
+    real_name = extract_name_from_contact(raw_contact) or extract_name_from_telegram(telegram)
     if real_name:
         return real_name, real_name
     return f"Респондент анкеты #{row_number}", None
@@ -506,7 +542,7 @@ def sync_existing_survey_to_weeek(path: str | Path, confirm: str) -> int:
             )
             if task_result.get("ok") and task_result.get("action") == "created":
                 deal_tasks_created += 1
-            elif task_result.get("ok") and task_result.get("action") == "updated":
+            elif task_result.get("ok") and task_result.get("action") in {"updated", "replaced", "kept_existing"}:
                 deal_tasks_updated += 1
             else:
                 weeek_warnings += 1

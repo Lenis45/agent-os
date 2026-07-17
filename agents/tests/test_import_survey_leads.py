@@ -65,6 +65,26 @@ def test_extract_name_from_contact_uses_cyrillic_name():
     assert name == "Мария Иванова"
 
 
+def test_extract_name_from_contact_rejects_service_words_and_locations():
+    assert importer.extract_name_from_contact("Телеграм @lead") is None
+    assert importer.extract_name_from_contact(
+        "89143458423 - живу во Владивостоке, перед звонком напишите"
+    ) is None
+
+
+def test_lead_display_name_uses_telegram_first_last_handle():
+    name, real_name = importer.lead_display_name(
+        20,
+        "@Ekaterina_Antipina",
+        None,
+        None,
+        "@Ekaterina_Antipina",
+    )
+
+    assert name == "Ekaterina Antipina"
+    assert real_name == "Ekaterina Antipina"
+
+
 def test_weeek_description_contains_contact_block_and_notes():
     lead = importer.SurveyLead(
         row_number=12,

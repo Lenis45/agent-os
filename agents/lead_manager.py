@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import time
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from memory import init_db
@@ -16,6 +17,7 @@ from retry import safe
 load_dotenv()
 init_db()
 log = get_logger("lead_manager")
+SURVEY_ROW_RE = re.compile(r"\[survey_row=(\d+)\]")
 
 def get_db():
     """Клиентский контур (152-ФЗ): лиды — в отдельной БД customer_db."""
@@ -190,11 +192,11 @@ def update_weeek_deal_details(deal_id: str, title: str = None, description: str 
         log.warning(f"WEEEK deal update failed: {e}")
         return {"ok": False, "action": "update_error"}
 
-def get_weeek_deal(deal_id: str) -> dict:
+def get_weeek_deal(deal_id: str) -> dict | None:
     if not deal_id:
-        return {}
+        return None
     if not _weeek_ready():
-        return {}
+        return None
     try:
         r = _weeek_request(
             "GET",
@@ -202,10 +204,10 @@ def get_weeek_deal(deal_id: str) -> dict:
             headers=WEEEK_HEADERS,
         )
         data = r.json() if r.ok else {}
-        return data.get("deal") if data.get("success") else {}
+        return data.get("deal") if data.get("success") else None
     except Exception as e:
         log.warning(f"WEEEK deal fetch failed: {e}")
-        return {}
+        return None
 
 def create_weeek_deal_task(deal_id: str, title: str, description: str) -> dict:
     if not deal_id:
@@ -253,19 +255,60 @@ def update_weeek_deal_task(deal_id: str, task_id: int, title: str, description: 
         log.warning(f"WEEEK deal task update failed: {e}")
         return {"ok": False, "action": "update_error", "task_id": task_id}
 
+def delete_weeek_deal_task(deal_id: str, task_id: int) -> dict:
+    if not deal_id or not task_id:
+        return {"ok": False, "action": "skipped", "reason": "missing_task"}
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    try:
+        r = _weeek_request(
+            "DELETE",
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/tasks/{task_id}",
+            headers=WEEEK_HEADERS,
+        )
+        data = r.json() if r.ok and r.text else {}
+        return {
+            "ok": r.status_code in (200, 202, 204) or bool(data.get("success")),
+            "action": "deleted",
+            "task_id": task_id,
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK deal task delete failed: {e}")
+        return {"ok": False, "action": "delete_error", "task_id": task_id}
+
 def upsert_weeek_deal_task(deal_id: str, title: str, description: str, marker: str = "КАРТОЧКА ЛИДА AMORI") -> dict:
     deal = get_weeek_deal(deal_id)
+    if deal is None:
+        return {"ok": False, "action": "skipped", "reason": "deal_fetch_failed"}
+    matches = []
     for task in deal.get("tasks") or []:
         task_description = task.get("description") or ""
         task_title = task.get("title") or ""
         if task.get("isDeleted"):
             continue
         if marker in task_description or task_title == title:
-            task_id = task.get("id")
-            result = update_weeek_deal_task(deal_id, task_id, title, description)
-            if result.get("ok"):
-                return result
-            break
+            matches.append(task)
+    if matches:
+        result = create_weeek_deal_task(deal_id, title, description)
+        if result.get("ok"):
+            removed = 0
+            for old_task in matches:
+                delete_result = delete_weeek_deal_task(deal_id, old_task.get("id"))
+                if delete_result.get("ok"):
+                    removed += 1
+            result["action"] = "replaced"
+            result["duplicates_removed"] = removed
+            return result
+        removed = 0
+        for duplicate in matches[1:]:
+            delete_result = delete_weeek_deal_task(deal_id, duplicate.get("id"))
+            if delete_result.get("ok"):
+                removed += 1
+        result["action"] = "kept_existing"
+        result["duplicates_removed"] = removed
+        result["ok"] = True
+        return result
     return create_weeek_deal_task(deal_id, title, description)
 
 def update_deal_stage(deal_id: str, new_stage: str):
@@ -448,6 +491,36 @@ def get_leads(status: str = None, limit: int = 20) -> list:
     cur.close()
     conn.close()
     return rows
+
+def _lead_contact_label(email: str = None, phone: str = None, telegram: str = None) -> str:
+    if telegram:
+        return telegram
+    if phone:
+        return phone
+    if email:
+        return email
+    return ""
+
+def _survey_row_from_notes(notes: str = None) -> str:
+    match = SURVEY_ROW_RE.search(notes or "")
+    return match.group(1) if match else ""
+
+def format_lead_list_item(lead: tuple) -> str:
+    lead_id, name, email, phone, telegram, source, pet_type, status, _stage, notes, *_ = lead
+    contact = _lead_contact_label(email, phone, telegram)
+    survey_row = _survey_row_from_notes(notes)
+    generic = not name or name.startswith("Респондент анкеты #") or name.strip().lower() in {"телеграм", "telegram"}
+
+    if generic and survey_row:
+        title = f"Анкета #{survey_row}"
+    else:
+        title = name or "Лид без имени"
+
+    if contact and contact not in title:
+        title = f"{title} · {contact}"
+
+    meta = " · ".join(item for item in [pet_type or "?", status or "?", source or ""] if item)
+    return f"#{lead_id} {title}\n   {meta}"
 
 def get_followups_due() -> list:
     """Лиды которым нужен follow-up сегодня"""

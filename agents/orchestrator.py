@@ -487,14 +487,14 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
             return f"✅ Лид {lid} обновлён: {field} = {value}"
         return "❌ Укажи lead_id и поле"
     elif tool == "get_leads":
-        from lead_manager import get_leads
+        from lead_manager import format_lead_list_item, get_leads
         status = params.get("status")
         leads = get_leads(status, limit=10)
         if not leads:
             return "Лидов не найдено"
         result = "📋 Лиды:\n"
         for l in leads:
-            result += f"#{l[0]} {l[1]} | {l[6] or '?'} | {l[7]}\n"
+            result += format_lead_list_item(l) + "\n"
         return result
     elif tool == "send_bulk_emails":
         from email_agent import send_bulk
