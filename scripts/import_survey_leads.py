@@ -50,12 +50,14 @@ EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 TELEGRAM_RE = re.compile(r"(?<![\w])@([A-Za-z0-9_]{3,32})")
 PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{8,}\d)")
 SURVEY_ROW_RE = re.compile(r"\[survey_row=(\d+)\]")
+CYRILLIC_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]+(?:[- ][А-ЯЁ][а-яё]+){0,2}\b")
 
 
 @dataclass(frozen=True)
 class SurveyLead:
     row_number: int
     name: str
+    real_name: str | None
     email: str | None
     phone: str | None
     telegram: str | None
@@ -105,6 +107,42 @@ def parse_contact(raw: str) -> tuple[str | None, str | None, str | None]:
     telegram = "@" + tg_match.group(1) if tg_match else None
     phone = normalize_phone(text)
     return email, phone, telegram
+
+
+def contact_label(email: str | None, phone: str | None, telegram: str | None, raw_contact: str = "") -> str:
+    if telegram:
+        return telegram
+    if phone:
+        return phone
+    if email:
+        return email
+    return clean(raw_contact) or "контакт не распознан"
+
+
+def extract_name_from_contact(raw: str) -> str | None:
+    text = clean(raw)
+    if not text:
+        return None
+    text = EMAIL_RE.sub(" ", text)
+    text = TELEGRAM_RE.sub(" ", text)
+    text = PHONE_RE.sub(" ", text)
+    text = re.sub(r"[^\wА-Яа-яЁё -]+", " ", text)
+    text = re.sub(r"\b(телефон|тел|telegram|tg|тг|whatsapp|ватсап|связь|контакт)\b", " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    match = CYRILLIC_NAME_RE.search(text)
+    if not match:
+        return None
+    words = [word.strip("- ") for word in match.group(0).split() if word.strip("- ")]
+    if not words:
+        return None
+    return " ".join(word[:1].upper() + word[1:].lower() for word in words)
+
+
+def lead_display_name(row_number: int, raw_contact: str, email: str | None, phone: str | None, telegram: str | None) -> tuple[str, str | None]:
+    real_name = extract_name_from_contact(raw_contact)
+    if real_name:
+        return real_name, real_name
+    return f"Респондент анкеты #{row_number}", None
 
 
 def selected_options(headers: list[str], row: tuple, prefix: str) -> list[str]:
@@ -164,6 +202,45 @@ def build_notes(headers: list[str], row: tuple, row_number: int, raw_contact: st
     return "\n".join(parts)
 
 
+def build_weeek_description(lead: SurveyLead) -> str:
+    contact = contact_label(lead.email, lead.phone, lead.telegram, lead.raw_contact)
+    title_name = lead.real_name or lead.name
+    contact_lines = [
+        "КАРТОЧКА ЛИДА AMORI",
+        "",
+        f"Имя/ориентир: {title_name}",
+        f"Источник: анкета владельцев собак 16.07.2026, строка #{lead.row_number}",
+        f"Тип: B2C, питомец: собака",
+        "",
+        "КАК СВЯЗАТЬСЯ",
+        f"Основной контакт: {contact}",
+    ]
+    if lead.telegram:
+        contact_lines.append(f"Telegram: {lead.telegram}")
+    if lead.phone:
+        contact_lines.append(f"Телефон: {lead.phone}")
+    if lead.email:
+        contact_lines.append(f"Email: {lead.email}")
+    contact_lines.extend(
+        [
+            f"Raw contact из анкеты: {lead.raw_contact or 'не указано'}",
+            "",
+            "ОТВЕТЫ АНКЕТЫ",
+            lead.notes,
+        ]
+    )
+    return "\n".join(contact_lines)
+
+
+def build_weeek_title(lead: SurveyLead) -> str:
+    contact = contact_label(lead.email, lead.phone, lead.telegram, lead.raw_contact)
+    if lead.real_name:
+        title = f"{lead.real_name} — анкета Amori #{lead.row_number}"
+    else:
+        title = f"Анкета Amori #{lead.row_number} — {contact}"
+    return title[:180]
+
+
 def iter_nonempty_rows(path: str | Path) -> Iterable[tuple[int, tuple]]:
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
@@ -183,10 +260,12 @@ def read_survey_leads(path: str | Path) -> list[SurveyLead]:
         if not is_yes(get_by_header(headers, row, INTERVIEW_COL)) or not contact:
             continue
         email, phone, telegram = parse_contact(contact)
+        name, real_name = lead_display_name(row_number, contact, email, phone, telegram)
         leads.append(
             SurveyLead(
                 row_number=row_number,
-                name=f"Респондент анкеты #{row_number}",
+                name=name,
+                real_name=real_name,
                 email=email,
                 phone=phone,
                 telegram=telegram,
@@ -240,6 +319,33 @@ def update_imported_lead(lead_id: int, pet_count: int | None):
         WHERE id=%s
         """,
         (pet_count, lead_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def update_existing_imported_lead(lead_id: int, lead: SurveyLead) -> None:
+    import db
+
+    conn = db.connect("customer_db")
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE leads
+        SET name=%s,
+            email=COALESCE(%s, email),
+            phone=COALESCE(%s, phone),
+            telegram_username=COALESCE(%s, telegram_username),
+            notes=%s,
+            interest_level='warm',
+            status='new',
+            pet_count=COALESCE(%s, pet_count),
+            next_followup_at=COALESCE(next_followup_at, NOW() + INTERVAL '1 day'),
+            updated_at=NOW()
+        WHERE id=%s
+        """,
+        (lead.name, lead.email, lead.phone, lead.telegram, lead.notes, lead.pet_count, lead_id),
     )
     conn.commit()
     cur.close()
@@ -302,6 +408,122 @@ def sync_missing_weeek_for_source() -> dict:
     }
 
 
+def sync_existing_survey_to_weeek(path: str | Path, confirm: str) -> int:
+    if confirm != CONFIRM_TOKEN:
+        print(f"Refusing to sync: pass --confirm-import={CONFIRM_TOKEN}", file=sys.stderr)
+        return 2
+
+    import db
+    from lead_manager import (
+        create_weeek_contact,
+        create_weeek_deal,
+        upsert_weeek_deal_task,
+        update_weeek_contact,
+        update_weeek_deal_details,
+    )
+
+    leads_by_row = {lead.row_number: lead for lead in read_survey_leads(path)}
+    conn = db.connect("customer_db")
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, notes, weeek_contact_id, weeek_deal_id
+        FROM leads
+        WHERE source=%s
+        ORDER BY id
+        """,
+        (SURVEY_SOURCE,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    matched = 0
+    local_updated = 0
+    contacts_created = 0
+    contacts_updated = 0
+    deals_created = 0
+    deals_updated = 0
+    deal_tasks_created = 0
+    deal_tasks_updated = 0
+    weeek_warnings = 0
+
+    for lead_id, notes, contact_id, deal_id in rows:
+        match = SURVEY_ROW_RE.search(notes or "")
+        if not match:
+            continue
+        lead = leads_by_row.get(int(match.group(1)))
+        if not lead:
+            continue
+        matched += 1
+        update_existing_imported_lead(int(lead_id), lead)
+        local_updated += 1
+
+        if not contact_id:
+            contact_id = create_weeek_contact(lead.name, lead.email, lead.phone)
+            if contact_id:
+                contacts_created += 1
+                conn = db.connect("customer_db")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE leads SET weeek_contact_id=%s, updated_at=NOW() WHERE id=%s",
+                    (contact_id, lead_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+        elif update_weeek_contact(contact_id, lead.name, lead.email, lead.phone).get("ok"):
+            contacts_updated += 1
+        else:
+            weeek_warnings += 1
+
+        description = build_weeek_description(lead)
+        title = build_weeek_title(lead)
+        if contact_id and not deal_id:
+            deal_id = create_weeek_deal(title, contact_id, "new", description=description)
+            if deal_id:
+                deals_created += 1
+                conn = db.connect("customer_db")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE leads SET weeek_deal_id=%s, updated_at=NOW() WHERE id=%s",
+                    (deal_id, lead_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+        elif deal_id:
+            result = update_weeek_deal_details(deal_id, title=title, description=description, stage="new")
+            if result.get("ok"):
+                deals_updated += 1
+            else:
+                weeek_warnings += 1
+        if deal_id:
+            task_result = upsert_weeek_deal_task(
+                deal_id,
+                "Анкета лида Amori: ответы и контакт",
+                description,
+            )
+            if task_result.get("ok") and task_result.get("action") == "created":
+                deal_tasks_created += 1
+            elif task_result.get("ok") and task_result.get("action") == "updated":
+                deal_tasks_updated += 1
+            else:
+                weeek_warnings += 1
+
+    print(f"survey_source={SURVEY_SOURCE}")
+    print(f"matched_existing={matched}")
+    print(f"local_updated={local_updated}")
+    print(f"weeek_contacts_created={contacts_created}")
+    print(f"weeek_contacts_updated={contacts_updated}")
+    print(f"weeek_deals_created={deals_created}")
+    print(f"weeek_deals_updated={deals_updated}")
+    print(f"weeek_deal_tasks_created={deal_tasks_created}")
+    print(f"weeek_deal_tasks_updated={deal_tasks_updated}")
+    print(f"weeek_warnings={weeek_warnings}")
+    return 0 if weeek_warnings == 0 else 1
+
+
 def dry_run(path: str | Path) -> int:
     import db
 
@@ -329,7 +551,7 @@ def execute(path: str | Path, confirm: str) -> int:
         return 2
 
     import db
-    from lead_manager import add_lead, remove_test_lead
+    from lead_manager import add_lead, remove_test_lead, update_weeek_deal_details, upsert_weeek_deal_task
 
     leads = read_survey_leads(path)
     conn = db.connect("customer_db")
@@ -345,6 +567,7 @@ def execute(path: str | Path, confirm: str) -> int:
 
     created = []
     skipped = 0
+    enriched_weeek_deals = 0
     for lead in leads:
         if lead.row_number in existing_rows:
             skipped += 1
@@ -360,6 +583,17 @@ def execute(path: str | Path, confirm: str) -> int:
             lead_type="b2c",
         )
         update_imported_lead(result["id"], lead.pet_count)
+        if result.get("weeek_deal_id"):
+            description = build_weeek_description(lead)
+            title = build_weeek_title(lead)
+            update_weeek_deal_details(result["weeek_deal_id"], title=title, description=description, stage="new")
+            task_result = upsert_weeek_deal_task(
+                result["weeek_deal_id"],
+                "Анкета лида Amori: ответы и контакт",
+                description,
+            )
+            if task_result.get("ok"):
+                enriched_weeek_deals += 1
         created.append(result)
 
     sync = sync_missing_weeek_for_source()
@@ -376,6 +610,7 @@ def execute(path: str | Path, confirm: str) -> int:
     print(f"created_local={len(created)}")
     print(f"created_weeek_contacts={weeek_contacts}")
     print(f"created_weeek_deals={weeek_deals}")
+    print(f"enriched_weeek_deals={enriched_weeek_deals}")
     print(f"skipped_existing={skipped}")
     print(f"synced_missing_weeek_checked={sync['checked']}")
     print(f"synced_missing_weeek_contacts={sync['contacts_created']}")
@@ -392,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Show planned changes only")
     mode.add_argument("--execute", action="store_true", help="Import leads and remove test data")
+    mode.add_argument("--sync-existing", action="store_true", help="Refresh already imported survey leads in local CRM and WEEEK")
     parser.add_argument("--confirm-import", default="", help="Required for --execute")
     args = parser.parse_args(argv)
 
@@ -401,6 +637,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.dry_run:
         return dry_run(path)
+    if args.sync_existing:
+        return sync_existing_survey_to_weeek(path, args.confirm_import)
     return execute(path, args.confirm_import)
 
 

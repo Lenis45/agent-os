@@ -57,3 +57,49 @@ def test_build_notes_contains_survey_row_and_key_blocks():
     assert "Стресс и тревожность" in notes
     assert "Отслеживание местоположения" in notes
     assert "Raw contact: @lead" in notes
+
+
+def test_extract_name_from_contact_uses_cyrillic_name():
+    name = importer.extract_name_from_contact("Мария Иванова, tg @lead, +7 999 111-22-33")
+
+    assert name == "Мария Иванова"
+
+
+def test_weeek_description_contains_contact_block_and_notes():
+    lead = importer.SurveyLead(
+        row_number=12,
+        name="Мария Иванова",
+        real_name="Мария Иванова",
+        email="lead@example.com",
+        phone="+79991112233",
+        telegram="@lead",
+        raw_contact="Мария Иванова @lead",
+        pet_count=1,
+        notes="[survey_row=12]\nГлавная проблема: тревожность на прогулке",
+    )
+
+    description = importer.build_weeek_description(lead)
+
+    assert "КАРТОЧКА ЛИДА AMORI" in description
+    assert "КАК СВЯЗАТЬСЯ" in description
+    assert "Telegram: @lead" in description
+    assert "Телефон: +79991112233" in description
+    assert "Email: lead@example.com" in description
+    assert "ОТВЕТЫ АНКЕТЫ" in description
+    assert "Главная проблема: тревожность на прогулке" in description
+
+
+def test_weeek_title_prefers_real_name():
+    lead = importer.SurveyLead(
+        row_number=12,
+        name="Мария Иванова",
+        real_name="Мария Иванова",
+        email=None,
+        phone=None,
+        telegram="@lead",
+        raw_contact="@lead",
+        pet_count=1,
+        notes="notes",
+    )
+
+    assert importer.build_weeek_title(lead) == "Мария Иванова — анкета Amori #12"

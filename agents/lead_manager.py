@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from memory import init_db
@@ -43,19 +44,37 @@ def _weeek_ready() -> bool:
         return False
     return True
 
+def _split_contact_name(name: str) -> tuple[str, str | None]:
+    first, *last = (name or "Лид Amori").split()
+    return first, " ".join(last) if last else None
+
+def _weeek_request(method: str, url: str, **kwargs) -> requests.Response:
+    timeout = kwargs.pop("timeout", 20)
+    last_error = None
+    for attempt in range(3):
+        try:
+            return requests.request(method, url, timeout=timeout, **kwargs)
+        except requests.RequestException as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(0.8 * (attempt + 1))
+    raise last_error
+
 def create_weeek_contact(name: str, email: str = None, phone: str = None) -> str:
     if not _weeek_ready():
         return None
-    first, *last = name.split()
-    body = {"firstName": first, "lastName": " ".join(last) if last else None}
+    first, last = _split_contact_name(name)
+    body = {"firstName": first, "lastName": last}
     if email:
         body["emails"] = [email]
     if phone:
         body["phones"] = [phone]
     try:
-        r = requests.post(
+        r = _weeek_request(
+            "POST",
             "https://api.weeek.net/public/v1/crm/contacts",
-            headers=WEEEK_HEADERS, json=body, timeout=12
+            headers=WEEEK_HEADERS,
+            json=body,
         )
         data = r.json() if r.ok else {}
     except Exception as e:
@@ -65,7 +84,41 @@ def create_weeek_contact(name: str, email: str = None, phone: str = None) -> str
         return data["contact"]["id"]
     return None
 
-def create_weeek_deal(title: str, contact_id: str, stage: str = "new", amount: float = None) -> str:
+def update_weeek_contact(contact_id: str, name: str, email: str = None, phone: str = None) -> dict:
+    if not contact_id:
+        return {"ok": False, "action": "skipped", "reason": "missing_contact_id"}
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    first, last = _split_contact_name(name)
+    body = {"firstName": first, "lastName": last}
+    if email:
+        body["emails"] = [email]
+    if phone:
+        body["phones"] = [phone]
+    try:
+        r = _weeek_request(
+            "PUT",
+            f"https://api.weeek.net/public/v1/crm/contacts/{contact_id}",
+            headers=WEEEK_HEADERS,
+            json=body,
+        )
+        data = r.json() if r.ok else {}
+        return {
+            "ok": bool(data.get("success")),
+            "action": "updated" if data.get("success") else "update_failed",
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK contact update failed: {e}")
+        return {"ok": False, "action": "update_error"}
+
+def create_weeek_deal(
+    title: str,
+    contact_id: str,
+    stage: str = "new",
+    amount: float = None,
+    description: str = None,
+) -> str:
     if not _weeek_ready():
         return None
     status_id = STAGES.get(stage, STAGES["new"])
@@ -75,10 +128,14 @@ def create_weeek_deal(title: str, contact_id: str, stage: str = "new", amount: f
     body = {"title": title, "statusId": status_id}
     if amount:
         body["amount"] = amount
+    if description:
+        body["description"] = description
     try:
-        r = requests.post(
+        r = _weeek_request(
+            "POST",
             f"https://api.weeek.net/public/v1/crm/statuses/{status_id}/deals",
-            headers=WEEEK_HEADERS, json=body, timeout=12
+            headers=WEEEK_HEADERS,
+            json=body,
         )
         data = r.json() if r.ok else {}
     except Exception as e:
@@ -89,16 +146,127 @@ def create_weeek_deal(title: str, contact_id: str, stage: str = "new", amount: f
         # Привязываем контакт к сделке
         if contact_id:
             try:
-                requests.post(
+                _weeek_request(
+                    "POST",
                     f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/contacts",
                     headers=WEEEK_HEADERS,
                     json={"contactId": contact_id},
-                    timeout=12,
                 )
             except Exception as e:
                 log.warning(f"WEEEK link contact failed: {e}")
         return deal_id
     return None
+
+def update_weeek_deal_details(deal_id: str, title: str = None, description: str = None, stage: str = None) -> dict:
+    if not deal_id:
+        return {"ok": False, "action": "skipped", "reason": "missing_deal_id"}
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    body = {}
+    if title:
+        body["title"] = title
+    if description:
+        body["description"] = description
+    if stage:
+        status_id = STAGES.get(stage)
+        if status_id:
+            body["statusId"] = status_id
+    if not body:
+        return {"ok": False, "action": "skipped", "reason": "empty_body"}
+    try:
+        r = _weeek_request(
+            "PUT",
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
+            headers=WEEEK_HEADERS,
+            json=body,
+        )
+        data = r.json() if r.ok else {}
+        return {
+            "ok": bool(data.get("success")),
+            "action": "updated" if data.get("success") else "update_failed",
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK deal update failed: {e}")
+        return {"ok": False, "action": "update_error"}
+
+def get_weeek_deal(deal_id: str) -> dict:
+    if not deal_id:
+        return {}
+    if not _weeek_ready():
+        return {}
+    try:
+        r = _weeek_request(
+            "GET",
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
+            headers=WEEEK_HEADERS,
+        )
+        data = r.json() if r.ok else {}
+        return data.get("deal") if data.get("success") else {}
+    except Exception as e:
+        log.warning(f"WEEEK deal fetch failed: {e}")
+        return {}
+
+def create_weeek_deal_task(deal_id: str, title: str, description: str) -> dict:
+    if not deal_id:
+        return {"ok": False, "action": "skipped", "reason": "missing_deal_id"}
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    try:
+        r = _weeek_request(
+            "POST",
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/tasks",
+            headers=WEEEK_HEADERS,
+            json={"title": title, "description": description},
+        )
+        data = r.json() if r.ok else {}
+        return {
+            "ok": bool(data.get("success")),
+            "action": "created" if data.get("success") else "create_failed",
+            "task_id": (data.get("task") or {}).get("id"),
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK deal task create failed: {e}")
+        return {"ok": False, "action": "create_error"}
+
+def update_weeek_deal_task(deal_id: str, task_id: int, title: str, description: str) -> dict:
+    if not deal_id or not task_id:
+        return {"ok": False, "action": "skipped", "reason": "missing_task"}
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    try:
+        r = _weeek_request(
+            "PUT",
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}/tasks/{task_id}",
+            headers=WEEEK_HEADERS,
+            json={"title": title, "description": description},
+        )
+        data = r.json() if r.ok else {}
+        return {
+            "ok": bool(data.get("success")),
+            "action": "updated" if data.get("success") else "update_failed",
+            "task_id": task_id,
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK deal task update failed: {e}")
+        return {"ok": False, "action": "update_error", "task_id": task_id}
+
+def upsert_weeek_deal_task(deal_id: str, title: str, description: str, marker: str = "КАРТОЧКА ЛИДА AMORI") -> dict:
+    deal = get_weeek_deal(deal_id)
+    for task in deal.get("tasks") or []:
+        task_description = task.get("description") or ""
+        task_title = task.get("title") or ""
+        if task.get("isDeleted"):
+            continue
+        if marker in task_description or task_title == title:
+            task_id = task.get("id")
+            result = update_weeek_deal_task(deal_id, task_id, title, description)
+            if result.get("ok"):
+                return result
+            break
+    return create_weeek_deal_task(deal_id, title, description)
 
 def update_deal_stage(deal_id: str, new_stage: str):
     if not _weeek_ready():
@@ -107,13 +275,8 @@ def update_deal_stage(deal_id: str, new_stage: str):
     if not status_id:
         return False
     try:
-        r = requests.put(
-            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
-            headers=WEEEK_HEADERS,
-            json={"statusId": status_id},
-            timeout=12,
-        )
-        return (r.json() if r.ok else {}).get("success", False)
+        result = update_weeek_deal_details(deal_id, stage=new_stage)
+        return result.get("ok", False)
     except Exception as e:
         log.warning(f"WEEEK stage update failed: {e}")
         return False
