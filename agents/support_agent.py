@@ -15,6 +15,7 @@ import llm
 import agent_contracts
 import notify
 from applog import get_logger
+from bot_commands import command_menu_text, set_application_commands
 
 load_dotenv()
 init_db()
@@ -169,6 +170,23 @@ def get_ticket_info(ticket_id: int) -> dict:
     if row:
         return {"customer_id": row[0], "name": row[1], "username": row[2], "status": row[3]}
     return {}
+
+def get_latest_ticket_for_customer(customer_id: str) -> dict:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, status, updated_at
+        FROM support_tickets
+        WHERE customer_id=%s
+        ORDER BY updated_at DESC
+        LIMIT 1
+    """, (customer_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return {}
+    return {"id": row[0], "status": row[1], "updated_at": row[2]}
 
 def escalate_ticket(ticket_id: int):
     conn = get_db()
@@ -328,6 +346,9 @@ save_to_faq=true: типичный вопрос с хорошим ответом
 
 # ===== TELEGRAM HANDLERS =====
 
+async def setup_support_commands(application):
+    await set_application_commands(application, "support")
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome = (
@@ -337,6 +358,36 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Напишите, что вас интересует."
     )
     await update.message.reply_text(welcome)
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(command_menu_text("support"))
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ticket = get_latest_ticket_for_customer(str(user.id))
+    if not ticket:
+        await update.message.reply_text("Пока не вижу открытого обращения. Напишите вопрос, и я создам диалог.")
+        return
+    status_names = {
+        "open": "в работе у помощника",
+        "escalated": "передано команде Amori",
+        "closed": "закрыто",
+    }
+    await update.message.reply_text(
+        f"Ваше обращение #{ticket['id']}: {status_names.get(ticket['status'], ticket['status'])}."
+    )
+
+async def cmd_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    customer_id = str(user.id)
+    customer_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    customer_username = user.username or ""
+    ticket_id = get_or_create_ticket(customer_id, customer_name, customer_username)
+    text = "Клиент запросил связь с командой через /contact"
+    save_support_message(ticket_id, "customer", text)
+    escalate_ticket(ticket_id)
+    notify_denis(ticket_id, customer_name or "Клиент", text, is_escalation=True)
+    await update.message.reply_text("Передал запрос команде Amori. Ответим, как только сможем.")
 
 async def handle_customer_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -415,8 +466,11 @@ def main():
     init_support_db()
     print("Support Agent запущен...")
 
-    app = Application.builder().token(SUPPORT_TOKEN).build()
+    app = Application.builder().token(SUPPORT_TOKEN).post_init(setup_support_commands).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("contact", cmd_contact))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_message))
     app.run_polling(drop_pending_updates=True)

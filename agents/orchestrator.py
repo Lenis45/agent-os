@@ -16,6 +16,7 @@ from groq import Groq
 import db
 import llm
 from applog import get_logger
+from bot_commands import command_menu_text, set_application_commands
 
 load_dotenv()
 init_db()
@@ -511,6 +512,50 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
 
 # ===== TELEGRAM =====
 
+async def setup_orchestrator_commands(application):
+    await set_application_commands(application, "orchestrator")
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text(
+        "Я Emilia, личный оркестратор Amori.\n\n"
+        + command_menu_text("orchestrator")
+    )
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text(command_menu_text("orchestrator"))
+
+async def handle_agents(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text("Проверяю систему...")
+    send_msg(tool_check_agents(), str(update.effective_chat.id))
+
+async def handle_leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    status = context.args[0] if context.args else None
+    result = execute_tool("get_leads", {"status": status}, get_history(str(update.message.from_user.id)))
+    await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
+
+async def handle_content_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    brief = " ".join(context.args or []).strip()
+    if not brief:
+        await update.message.reply_text(
+            "Контент-завод готовит посты, письма, креативы и лендинги на аппрув.\n\n"
+            "Пример:\n"
+            "/content пост в стиле канала Amori про итоги опроса владельцев собак\n\n"
+            "Если напишешь задачу после команды, я создам материал в контент-очереди."
+        )
+        return
+    result = tool_make_content(brief)
+    await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
+
 def send_msg(text: str, chat_id: str = None):
     token = os.getenv("ORCHESTRATOR_BOT_TOKEN")
     cid = chat_id or os.getenv("TELEGRAM_MY_ID")
@@ -797,7 +842,12 @@ def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
     log.info("AI Orchestrator запущен (мозг: OpenModel/DeepSeek V4 Flash, fallback Groq; vision qwen3-vl-plus)")
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
-    app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).build()
+    app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CommandHandler("agents", handle_agents))
+    app.add_handler(CommandHandler("leads", handle_leads))
+    app.add_handler(CommandHandler("content", handle_content_command))
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))
     app.add_handler(CommandHandler("tickets", handle_tickets))

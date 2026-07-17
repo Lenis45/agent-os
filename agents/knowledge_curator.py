@@ -10,6 +10,7 @@ import notify
 import llm
 import db
 from applog import get_logger
+from bot_commands import command_menu_text, set_application_commands
 
 load_dotenv()
 init_db()
@@ -88,6 +89,22 @@ def save_to_obsidian(folder, filename, content):
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
     return filepath
+
+async def setup_secretary_commands(application):
+    await set_application_commands(application, "secretary")
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text(
+        "Я SecretaryAmo, личный секретарь Amori.\n\n"
+        + command_menu_text("secretary")
+    )
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text(command_menu_text("secretary"))
 
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Управление командой: /team add Имя Роль Направление"""
@@ -170,12 +187,10 @@ async def handle_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.error(f"Translate error: {e}")
         await update.message.reply_text("Ошибка. Попробуй ещё раз.")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
+async def save_text_message(message, text: str):
     if str(message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
         return
 
-    text = message.text or message.caption or ""
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
@@ -217,10 +232,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_to_obsidian("01 - Inbox/Необработанное", f"inbox-{date_str}-{now.strftime('%H%M%S')}", md)
         notify.send("📥 Сохранено в Inbox")
 
+async def handle_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await update.message.reply_text("Использование: /save текст заметки, идеи, контакта или ссылки")
+        return
+    await save_text_message(update.message, text)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if str(message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    text = message.text or message.caption or ""
+    await save_text_message(message, text)
+
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
     log.info("Knowledge Curator + Context Translator запущен")
-    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).post_init(setup_secretary_commands).build()
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CommandHandler("save", handle_save))
     app.add_handler(CommandHandler("translate", handle_translate))
     app.add_handler(CommandHandler("team", handle_team))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
