@@ -118,6 +118,71 @@ def update_deal_stage(deal_id: str, new_stage: str):
         log.warning(f"WEEEK stage update failed: {e}")
         return False
 
+def _weeek_delete(path: str, label: str) -> dict:
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    try:
+        r = requests.delete(
+            f"https://api.weeek.net/public/v1/{path.lstrip('/')}",
+            headers=WEEEK_HEADERS,
+            timeout=12,
+        )
+        if r.status_code in (200, 202, 204):
+            return {"ok": True, "action": "deleted", "status_code": r.status_code}
+        data = {}
+        try:
+            data = r.json()
+        except Exception:
+            pass
+        if data.get("success"):
+            return {"ok": True, "action": "deleted", "status_code": r.status_code}
+        return {
+            "ok": False,
+            "action": "delete_failed",
+            "status_code": r.status_code,
+            "label": label,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK {label} delete failed: {e}")
+        return {"ok": False, "action": "delete_error", "label": label}
+
+def mark_weeek_deal_test_removed(deal_id: str, title: str = None) -> dict:
+    if not _weeek_ready():
+        return {"ok": False, "action": "skipped", "reason": "weeek_not_configured"}
+    status_id = STAGES.get("lost")
+    if not status_id:
+        return {"ok": False, "action": "skipped", "reason": "lost_stage_missing"}
+    body = {"statusId": status_id}
+    if title:
+        body["title"] = f"[TEST REMOVED] {title}"[:180]
+    try:
+        r = requests.put(
+            f"https://api.weeek.net/public/v1/crm/deals/{deal_id}",
+            headers=WEEEK_HEADERS,
+            json=body,
+            timeout=12,
+        )
+        data = r.json() if r.ok else {}
+        return {
+            "ok": bool(data.get("success")),
+            "action": "marked_lost" if data.get("success") else "mark_failed",
+            "status_code": r.status_code,
+        }
+    except Exception as e:
+        log.warning(f"WEEEK mark test deal failed: {e}")
+        return {"ok": False, "action": "mark_error"}
+
+def delete_weeek_deal(deal_id: str, title: str = None) -> dict:
+    result = _weeek_delete(f"crm/deals/{deal_id}", "deal")
+    if result.get("ok"):
+        return result
+    fallback = mark_weeek_deal_test_removed(deal_id, title)
+    fallback["delete_attempt"] = result
+    return fallback
+
+def delete_weeek_contact(contact_id: str) -> dict:
+    return _weeek_delete(f"crm/contacts/{contact_id}", "contact")
+
 # ===== PostgreSQL =====
 
 def add_lead(name: str, email: str = None, phone: str = None,
@@ -147,13 +212,22 @@ def add_lead(name: str, email: str = None, phone: str = None,
     lead_id = cur.fetchone()[0]
 
     # Сохраняем WEEEK IDs
-    if deal_id:
+    if deal_id or contact_id:
         cur.execute(
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS weeek_deal_id VARCHAR(50)",
         )
         cur.execute(
+            "ALTER TABLE leads ADD COLUMN IF NOT EXISTS weeek_contact_id VARCHAR(50)",
+        )
+    if deal_id:
+        cur.execute(
             "UPDATE leads SET weeek_deal_id=%s WHERE id=%s",
             (deal_id, lead_id)
+        )
+    if contact_id:
+        cur.execute(
+            "UPDATE leads SET weeek_contact_id=%s WHERE id=%s",
+            (contact_id, lead_id)
         )
 
     conn.commit()
@@ -161,6 +235,34 @@ def add_lead(name: str, email: str = None, phone: str = None,
     conn.close()
 
     return {"id": lead_id, "weeek_deal_id": deal_id, "weeek_contact_id": contact_id}
+
+def remove_test_lead(lead_id: int, reason: str = "[TEST REMOVED]") -> dict:
+    """Remove a known test lead locally and best-effort clean linked WEEEK records."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, weeek_deal_id, weeek_contact_id
+        FROM leads
+        WHERE id=%s
+    """, (lead_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return {"id": lead_id, "deleted": False, "reason": "not_found"}
+
+    _, name, deal_id, contact_id = row
+    weeek = {}
+    if deal_id:
+        weeek["deal"] = delete_weeek_deal(deal_id, f"{reason} {name or lead_id}")
+    if contact_id:
+        weeek["contact"] = delete_weeek_contact(contact_id)
+
+    cur.execute("DELETE FROM leads WHERE id=%s", (lead_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"id": lead_id, "deleted": True, "weeek": weeek}
 
 def get_leads(status: str = None, limit: int = 20) -> list:
     conn = get_db()
