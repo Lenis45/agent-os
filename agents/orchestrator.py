@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import tempfile
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -22,8 +23,34 @@ log = get_logger("orchestrator")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+MAX_TELEGRAM_REPLY_CHARS = 3500
 
 # ===== ИСТОРИЯ РАЗГОВОРА =====
+
+def normalize_telegram_reply(text: str, max_chars: int = MAX_TELEGRAM_REPLY_CHARS) -> str:
+    """Clean model output for a natural Telegram reply."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)
+    s = re.sub(r"__(.*?)__", r"\1", s, flags=re.S)
+    s = re.sub(r"`([^`]*)`", r"\1", s)
+    lines = []
+    for line in s.splitlines():
+        line = line.strip()
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^[*_]{1,3}\s*", "", line)
+        line = re.sub(r"\s{2,}", " ", line)
+        if line:
+            lines.append(line)
+    s = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    if not s:
+        return "Не получил содержательный ответ. Попробуй переформулировать."
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars].rstrip()
+    sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if sentence_end >= max_chars * 0.6:
+        return cut[:sentence_end + 1]
+    return cut.rstrip(" ,;:") + "…"
 
 def save_message(user_id: str, role: str, content: str, tool: str = None):
     conn = get_db()
@@ -487,6 +514,7 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
 def send_msg(text: str, chat_id: str = None):
     token = os.getenv("ORCHESTRATOR_BOT_TOKEN")
     cid = chat_id or os.getenv("TELEGRAM_MY_ID")
+    text = normalize_telegram_reply(text, max_chars=12000)
     for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = json.dumps({"chat_id": cid, "text": chunk}).encode()
@@ -496,18 +524,27 @@ def send_msg(text: str, chat_id: str = None):
         except Exception as e:
             log.warning(f"send_msg failed: {e}")
 
-async def transcribe_voice(file_id: str, context) -> str:
-    """Транскрибируем голос через Groq Whisper"""
+async def transcribe_audio(file_id: str, context, suffix: str = ".ogg", mime: str = "audio/ogg") -> str:
+    """Transcribe Telegram voice/audio/video-note through Groq Whisper."""
     file = await context.bot.get_file(file_id)
-    with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
-        await file.download_to_drive(tmp.name)
-        with open(tmp.name, 'rb') as audio:
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            path = tmp.name
+        await file.download_to_drive(path)
+        with open(path, 'rb') as audio:
             transcription = groq_client.audio.transcriptions.create(
-                file=("audio.ogg", audio, "audio/ogg"),
+                file=("telegram_audio" + suffix, audio, mime),
                 model="whisper-large-v3",
                 language="ru"
             )
-    return transcription.text
+        return normalize_telegram_reply(transcription.text, max_chars=2000)
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -517,11 +554,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎙 Распознаю голосовое...")
 
     try:
-        text = await transcribe_voice(update.message.voice.file_id, context)
-        await update.message.reply_text(f"🗣 Ты сказал: {text}")
+        msg = update.message
+        if msg.voice:
+            text = await transcribe_audio(msg.voice.file_id, context, ".ogg", "audio/ogg")
+        elif msg.audio:
+            ext = os.path.splitext(msg.audio.file_name or "")[1] or ".mp3"
+            text = await transcribe_audio(msg.audio.file_id, context, ext, msg.audio.mime_type or "audio/mpeg")
+        elif msg.video_note:
+            text = await transcribe_audio(msg.video_note.file_id, context, ".mp4", "video/mp4")
+        else:
+            await update.message.reply_text("Не вижу аудио в сообщении.")
+            return
+        await update.message.reply_text(normalize_telegram_reply(f"🗣 Распознал: {text}", max_chars=1200))
         await process_message(update, context, text, user_id)
     except Exception as e:
-        await update.message.reply_text(f"Не смог распознать: {e}")
+        log.warning(f"voice transcription failed: {e}")
+        await update.message.reply_text(
+            "Не смог распознать аудио. Проверь, что это обычное голосовое/аудио, и попробуй ещё раз."
+        )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Фото → анализ через Qwen-vision (qwen3-vl-plus)."""
@@ -540,12 +590,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             path = tmp.name
         loop = asyncio.get_event_loop()
         prompt = question + "\n\nОтвечай по-русски, конкретно."
-        result = await loop.run_in_executor(_executor, lambda: llm.vision_analyze(prompt, [path]))
+        qwen_ref = getattr(file, "file_path", None) or path
+        result = await loop.run_in_executor(
+            _executor,
+            lambda: llm.vision_analyze(prompt, [qwen_ref], fallback_image_paths=[path]),
+        )
         if not str(result).strip():
             result = "Не смог проанализировать изображение (vision-модель недоступна, попробуй позже)."
         save_message(user_id, "user", f"[фото] {caption}")
-        save_message(user_id, "assistant", str(result), "vision")
-        send_msg(str(result), str(update.effective_chat.id))
+        result = normalize_telegram_reply(result)
+        save_message(user_id, "assistant", result, "vision")
+        send_msg(result, str(update.effective_chat.id))
     except Exception as e:
         import traceback; log.error(traceback.format_exc())
         send_msg(f"⚠️ Ошибка анализа фото: {str(e)[:200]}", str(update.effective_chat.id))
@@ -574,7 +629,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Картинка, присланная как документ → vision
         if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
             q = (caption or "Проанализируй это изображение в контексте Amori.") + "\nОтвечай по-русски."
-            result = await loop.run_in_executor(_executor, lambda: llm.vision_analyze(q, [path]))
+            qwen_ref = getattr(file, "file_path", None) or path
+            result = await loop.run_in_executor(
+                _executor,
+                lambda: llm.vision_analyze(q, [qwen_ref], fallback_image_paths=[path]),
+            )
         else:
             content = await loop.run_in_executor(_executor, lambda: extract_text_from_file(path))
             if content is None:
@@ -591,8 +650,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not str(result).strip():
             result = "Не смог обработать документ (модель недоступна, попробуй позже)."
         save_message(user_id, "user", f"[документ {fname}] {caption}")
-        save_message(user_id, "assistant", str(result), "document")
-        send_msg(str(result), str(update.effective_chat.id))
+        result = normalize_telegram_reply(result)
+        save_message(user_id, "assistant", result, "document")
+        send_msg(result, str(update.effective_chat.id))
     except Exception as e:
         import traceback; log.error(traceback.format_exc())
         send_msg(f"⚠️ Ошибка обработки документа: {str(e)[:200]}", str(update.effective_chat.id))
@@ -614,7 +674,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pending:
             await update.message.reply_text("⚙️ Выполняю...")
             history = get_history(user_id)
-            result = execute_tool(pending["type"], pending["params"], history)
+            result = normalize_telegram_reply(execute_tool(pending["type"], pending["params"], history))
             resolve_pending(pending["id"], "confirmed")
             save_message(user_id, "assistant", result, pending["type"])
             send_msg(result, update.effective_chat.id)
@@ -650,12 +710,13 @@ async def process_message(update: Update, context, text: str, user_id: str):
 
         if tool == "answer":
             response = await loop.run_in_executor(_executor, lambda: tool_direct_answer(text, history))
+            response = normalize_telegram_reply(response)
             save_message(user_id, "assistant", response, "answer")
             send_msg(response, str(update.effective_chat.id))
             return
 
         if needs_confirmation:
-            confirmation_text = decision.get("confirmation_text", f"Выполнить: {tool}?")
+            confirmation_text = normalize_telegram_reply(decision.get("confirmation_text", f"Выполнить: {tool}?"))
             action_id = save_pending(user_id, tool, params)
             save_message(user_id, "assistant", confirmation_text)
             await update.message.reply_text(
@@ -663,6 +724,7 @@ async def process_message(update: Update, context, text: str, user_id: str):
             )
         else:
             result = await loop.run_in_executor(_executor, lambda: execute_tool(tool, params, history))
+            result = normalize_telegram_reply(result)
             save_message(user_id, "assistant", result, tool)
             send_msg(result, str(update.effective_chat.id))
 
@@ -739,7 +801,7 @@ def main():
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))
     app.add_handler(CommandHandler("tickets", handle_tickets))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO_NOTE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

@@ -71,3 +71,10 @@ def test_customer_agents_use_customer_db():
 def test_no_dead_if_false():
     """Регресс-страж: убранный мёртвый код в chief_of_staff не вернулся."""
     assert "if False" not in _src("chief_of_staff")
+
+
+def test_orchestrator_registers_multimodal_telegram_handlers():
+    src = _src("orchestrator")
+    assert "filters.VOICE | filters.AUDIO | filters.VIDEO_NOTE" in src
+    assert "MessageHandler(filters.PHOTO, handle_photo)" in src
+    assert "MessageHandler(filters.Document.ALL, handle_document)" in src

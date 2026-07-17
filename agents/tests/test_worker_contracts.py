@@ -7,6 +7,7 @@ import audit_agent_outputs
 import content_factory
 import email_agent
 import knowledge_curator
+import orchestrator
 import support_agent
 
 
@@ -66,6 +67,16 @@ def test_support_answer_normalizer_shortens_long_reply():
     out = support_agent.normalize_telegram_answer(raw, max_chars=180)
     assert len(out) <= 181
     assert out.endswith((".", "!", "?", "…"))
+
+
+def test_orchestrator_reply_normalizer_removes_markdown_for_telegram():
+    raw = "**Итог:** нужно проверить фото.\n\n## Дальше\n`Отвечу коротко.`"
+    out = orchestrator.normalize_telegram_reply(raw)
+    assert "**" not in out
+    assert "`" not in out
+    assert "##" not in out
+    assert "Итог:" in out
+    assert "Отвечу коротко." in out
 
 
 def test_dev_worker_contract_forbids_fake_applied_work():

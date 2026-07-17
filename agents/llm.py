@@ -68,6 +68,9 @@ _AGENT_BUILD = {}
 QWEN_FREE_PREFIX = "qwen-free/"
 FREEQWEN_API_BASE = os.getenv("FREEQWEN_API_BASE", "http://localhost:3264/api")
 FREEQWEN_API_KEY = os.getenv("FREEQWEN_API_KEY", "dummy-key")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
 def _resolve_llm(model):
@@ -198,24 +201,115 @@ def _freeqwen_chat(messages, model: str, max_tokens: int = 1500,
     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
 
 
+def _gemini_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
+    """Fallback image analysis through Gemini's generateContent API."""
+    if not GEMINI_API_KEY:
+        return ""
+    import base64
+    import urllib.request
+
+    parts = [{"text": prompt}]
+    for p in (image_paths if isinstance(image_paths, (list, tuple)) else [image_paths]):
+        ext = (os.path.splitext(str(p))[1].lower().lstrip(".") or "png")
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+        parts.append({
+            "inline_data": {
+                "mime_type": mime,
+                "data": base64.b64encode(open(p, "rb").read()).decode(),
+            }
+        })
+    body = json.dumps({
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
+    }).encode()
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_VISION_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+    last = None
+    for _ in range(3):
+        try:
+            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode())
+            break
+        except Exception as e:
+            last = e
+    else:
+        raise last if last else RuntimeError("gemini vision: unknown error")
+    candidates = data.get("candidates") or []
+    parts_out = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+    return "\n".join(p.get("text", "") for p in parts_out).strip()
+
+
+def _groq_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
+    """Fallback image analysis through Groq vision models."""
+    import base64
+    from groq import Groq
+
+    key = os.getenv("GROQ_API_KEY", "")
+    if not key:
+        return ""
+    content = [{"type": "text", "text": prompt}]
+    for p in (image_paths if isinstance(image_paths, (list, tuple)) else [image_paths]):
+        ref = str(p)
+        if ref.startswith(("http://", "https://", "data:image/")):
+            url = ref
+        else:
+            ext = (os.path.splitext(ref)[1].lower().lstrip(".") or "png")
+            mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+            b64 = base64.b64encode(open(ref, "rb").read()).decode()
+            url = f"data:image/{mime};base64,{b64}"
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    client = Groq(api_key=key, timeout=timeout)
+    resp = client.chat.completions.create(
+        model=GROQ_VISION_MODEL,
+        messages=[{"role": "user", "content": content}],
+        temperature=0.2,
+        max_tokens=1200,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
-                   model: str = "qwen3-vl-plus") -> str:
-    """Анализ изображений через Qwen-vision (FreeQwenApi). image_paths — пути к файлам.
-    Usage пишется в llm_usage как tier 3 (free). Пустой/ошибка → ''."""
+                   model: str = "qwen3-vl-plus", fallback_image_paths=None) -> str:
+    """Analyze images through Qwen vision, with Gemini as a fallback."""
     import base64
     content = [{"type": "text", "text": prompt}]
     for p in (image_paths if isinstance(image_paths, (list, tuple)) else [image_paths]):
-        b64 = base64.b64encode(open(p, "rb").read()).decode()
-        ext = (os.path.splitext(str(p))[1].lower().lstrip(".") or "png")
-        mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+        ref = str(p)
+        if ref.startswith(("http://", "https://", "data:image/")):
+            url = ref
+        else:
+            b64 = base64.b64encode(open(ref, "rb").read()).decode()
+            ext = (os.path.splitext(ref)[1].lower().lstrip(".") or "png")
+            mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+            url = f"data:image/{mime};base64,{b64}"
         content.append({"type": "image_url",
-                        "image_url": {"url": f"data:image/{mime};base64,{b64}"}})
+                        "image_url": {"url": url}})
     try:
         result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
     except Exception as e:
         print(f"[llm] vision_analyze упал: {e}")
         result = ""
-    _record(agent_key, f"qwen-free/{model}", prompt, result, source="vision")
+    used_model = f"qwen-free/{model}"
+    if _is_empty(result):
+        fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
+        try:
+            result = _groq_vision_analyze(prompt, fallback_paths)
+            if result:
+                used_model = f"groq/{GROQ_VISION_MODEL}"
+        except Exception as e:
+            print(f"[llm] groq vision fallback упал: {e}")
+    if _is_empty(result):
+        fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
+        try:
+            result = _gemini_vision_analyze(prompt, fallback_paths)
+            if result:
+                used_model = f"gemini/{GEMINI_VISION_MODEL}"
+        except Exception as e:
+            print(f"[llm] gemini vision fallback упал: {e}")
+    _record(agent_key, used_model, prompt, result, source="vision")
     return result
 
 
