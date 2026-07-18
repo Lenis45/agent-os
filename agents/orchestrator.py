@@ -3,6 +3,7 @@ import json
 import asyncio
 import tempfile
 import re
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -90,6 +91,17 @@ def save_pending(user_id: str, action_type: str, params: dict) -> int:
     conn.close()
     return action_id
 
+def _normalize_pending_params(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
 def get_pending(user_id: str) -> dict:
     conn = get_db()
     cur = conn.cursor()
@@ -102,7 +114,7 @@ def get_pending(user_id: str) -> dict:
     cur.close()
     conn.close()
     if row:
-        return {"id": row[0], "type": row[1], "params": row[2]}
+        return {"id": row[0], "type": row[1], "params": _normalize_pending_params(row[2])}
     return None
 
 def resolve_pending(action_id: int, status: str):
@@ -155,6 +167,39 @@ def tool_calendar_check() -> str:
     import subprocess, sys
     subprocess.Popen([sys.executable, os.path.join(_HERE, "calendar_agent.py")])
     return "Проверяю календарь, отчёт придёт через минуту."
+
+def tool_calendar_week() -> str:
+    from calendar_agent import format_event_list, get_upcoming_events, local_now
+    events = get_upcoming_events(days=7)
+    return format_event_list(events, days=7, now=local_now())
+
+def tool_add_calendar_event(text: str) -> str:
+    if not text.strip():
+        return "Напиши событие целиком: что добавить, дата и время. Например: добавить встречу завтра в 10:00."
+    from calendar_agent import create_manual_event_from_text
+    result = create_manual_event_from_text(text, source="emilia")
+    return result.get("message", "Не смог добавить событие в календарь.")
+
+def tool_change_calendar_event(text: str) -> str:
+    if not text.strip():
+        return "Напиши, какое событие исправить. Например: перенеси событие 1 на завтра 12:00."
+    from calendar_agent import apply_calendar_change_from_text
+    result = apply_calendar_change_from_text(text, dry_run=False)
+    return result.get("message", "Не смог изменить календарь.")
+
+def tool_preview_calendar_change(text: str) -> str:
+    from calendar_agent import plan_calendar_change_from_text
+    plan = plan_calendar_change_from_text(text)
+    return plan.get("message", "Не смог подготовить изменение календаря.")
+
+def tool_plan_calendar_change(text: str) -> dict:
+    from calendar_agent import plan_calendar_change_from_text
+    return plan_calendar_change_from_text(text)
+
+def tool_apply_calendar_change_plan(plan: dict) -> str:
+    from calendar_agent import apply_calendar_change_plan
+    result = apply_calendar_change_plan(plan)
+    return result.get("message", "Не смог изменить календарь.")
 
 def tool_save_note(text: str) -> str:
     import re
@@ -366,6 +411,9 @@ TOOLS_DESCRIPTION = """
 - translate: перевести задачу для команды (params: task)
 - check_tasks: проверить задачи в WEEEK и Taiga (params: нет)
 - check_calendar: проверить и синхронизировать календарь (params: нет)
+- calendar_week: показать мероприятия на неделю вперёд (params: нет)
+- add_calendar_event: добавить событие/встречу/мероприятие в Google Calendar из текста Дениса (params: text)
+- change_calendar_event: перенести, переименовать, исправить или удалить существующее событие (params: text)
 - save_note: сохранить заметку в Obsidian (params: text)
 - update_team: обновить состав команды (params: action[add/remove], name, role, direction)
 - answer: ответить на вопрос напрямую (params: question)
@@ -383,10 +431,40 @@ TOOLS_DESCRIPTION = """
 # рассылка, запуск проекта команды, удаление из команды). Чтения и анализ — сразу,
 # без лишних «ответь ДА/НЕТ» (это бесило в старой версии). Политика жёсткая, на сервере,
 # а не на доверии к LLM.
-CONFIRM_TOOLS = {"send_email_lead", "send_bulk_emails", "update_team", "new_project"}
+CONFIRM_TOOLS = {"send_email_lead", "send_bulk_emails", "update_team", "new_project", "change_calendar_event"}
+
+def _is_calendar_add_request(message: str) -> bool:
+    text = (message or "").lower()
+    add_words = ("добав", "постав", "заплан", "создай", "внеси", "занеси")
+    calendar_words = ("календар", "встреч", "созвон", "мероприят", "событ", "чай", "звонок")
+    return any(w in text for w in add_words) and any(w in text for w in calendar_words)
+
+def _is_calendar_change_request(message: str) -> bool:
+    text = (message or "").lower()
+    change_words = ("перенеси", "измени", "исправ", "переимен", "удали", "удалить", "отмени", "отменить")
+    calendar_words = ("календар", "встреч", "созвон", "мероприят", "событ", "звонок")
+    numbered_event = bool(re.search(r"\bсобыти[ея]\s+\d+\b", text))
+    return any(w in text for w in change_words) and (numbered_event or any(w in text for w in calendar_words))
+
+def _is_calendar_list_request(message: str) -> bool:
+    text = (message or "").lower()
+    list_words = ("покажи", "проверь", "что", "какие", "список")
+    calendar_words = ("календар", "встреч", "созвон", "мероприят", "событ")
+    return any(w in text for w in list_words) and any(w in text for w in calendar_words)
 
 def orchestrate(message: str, history: list) -> dict:
     """Определяем намерение и инструмент"""
+    if _is_calendar_change_request(message):
+        return {
+            "tool": "change_calendar_event",
+            "params": {"text": message},
+            "confirmation_text": "Проверю календарь и внесу правку в существующее событие. Подтверди, если это именно то, что нужно.",
+        }
+    if _is_calendar_add_request(message):
+        return {"tool": "add_calendar_event", "params": {"text": message}, "confirmation_text": ""}
+    if _is_calendar_list_request(message):
+        return {"tool": "calendar_week", "params": {}, "confirmation_text": ""}
+
     history_text = "\n".join([f"{m['role']}: {m['content'][:200]}" for m in history[-8:]])
 
     prompt = f"""Ты — маршрутизатор намерений для AI-ассистента CEO стартапа Amori.
@@ -409,6 +487,9 @@ def orchestrate(message: str, history: list) -> dict:
 
 Подсказки по выбору:
 - «проверь агентов/ботов», «всё работает?», «статус системы» → check_agents
+- «добавь встречу/событие/мероприятие в календарь ...» → add_calendar_event (params: {{"text": полное сообщение}})
+- «что в календаре на неделю», «покажи мероприятия» → calendar_week
+- «перенеси/измени/переименуй/удали событие ...» → change_calendar_event (params: {{"text": полное сообщение}})
 - вопрос/просьба объяснить/совет/анализ без явного действия → answer (params: {{"question": "..."}})
 - отправить письмо лиду → send_email_lead; запустить проект команде → new_project."""
 
@@ -449,6 +530,15 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
         return tool_check_tasks()
     elif tool == "check_calendar":
         return tool_calendar_check()
+    elif tool == "calendar_week":
+        return tool_calendar_week()
+    elif tool == "add_calendar_event":
+        return tool_add_calendar_event(params.get("text", ""))
+    elif tool == "change_calendar_event":
+        plan = params.get("plan")
+        if plan:
+            return tool_apply_calendar_change_plan(plan)
+        return tool_change_calendar_event(params.get("text", ""))
     elif tool == "save_note":
         return tool_save_note(params.get("text", ""))
     elif tool == "update_team":
@@ -532,7 +622,9 @@ async def handle_agents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
         return
     await update.message.reply_text("Проверяю систему...")
-    send_msg(tool_check_agents(), str(update.effective_chat.id))
+    result = tool_check_agents()
+    if not send_msg(result, str(update.effective_chat.id)):
+        await reply_text_with_retry(update, result)
 
 async def handle_leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
@@ -556,18 +648,81 @@ async def handle_content_command(update: Update, context: ContextTypes.DEFAULT_T
     result = tool_make_content(brief)
     await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
 
-def send_msg(text: str, chat_id: str = None):
+async def handle_calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    text = " ".join(context.args or []).strip()
+    if text:
+        user_id = str(update.message.from_user.id)
+        if _is_calendar_change_request(text):
+            plan = await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                lambda: tool_plan_calendar_change(text),
+            )
+            if not plan.get("ok"):
+                await update.message.reply_text(normalize_telegram_reply(plan.get("message", "Не смог подготовить изменение календаря.")))
+                return
+            save_pending(user_id, "change_calendar_event", {"text": text, "plan": plan})
+            await update.message.reply_text(
+                normalize_telegram_reply(f"🔔 Подтверди изменение календаря:\n\n{plan['message']}\n\nОтветь ДА или НЕТ")
+            )
+            return
+        else:
+            result = await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                lambda: tool_add_calendar_event(text),
+            )
+    else:
+        result = await asyncio.get_event_loop().run_in_executor(_executor, tool_calendar_week)
+    await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
+
+def send_msg(text: str, chat_id: str = None) -> bool:
     token = os.getenv("ORCHESTRATOR_BOT_TOKEN")
     cid = chat_id or os.getenv("TELEGRAM_MY_ID")
+    if not token or not cid:
+        log.warning("send_msg skipped: missing ORCHESTRATOR_BOT_TOKEN or chat_id")
+        return False
     text = normalize_telegram_reply(text, max_chars=12000)
+    ok = True
     for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = json.dumps({"chat_id": cid, "text": chunk}).encode()
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        try:
-            urllib.request.urlopen(req, timeout=15)
-        except Exception as e:
-            log.warning(f"send_msg failed: {e}")
+        delivered = False
+        for attempt in range(3):
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                if payload.get("ok"):
+                    delivered = True
+                    break
+                log.warning(f"send_msg telegram ok=false: {payload.get('description', 'unknown')}")
+            except Exception as e:
+                log.warning(f"send_msg failed attempt {attempt + 1}/3: {e}")
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+        if not delivered:
+            ok = False
+    return ok
+
+async def reply_text_with_retry(update: Update, text: str) -> bool:
+    """Fallback delivery through python-telegram-bot when direct Bot API send fails."""
+    text = normalize_telegram_reply(text, max_chars=12000)
+    ok = True
+    for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+        delivered = False
+        for attempt in range(3):
+            try:
+                await update.message.reply_text(chunk)
+                delivered = True
+                break
+            except Exception as e:
+                log.warning(f"reply_text fallback failed attempt {attempt + 1}/3: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+        if not delivered:
+            ok = False
+    return ok
 
 async def transcribe_audio(file_id: str, context, suffix: str = ".ogg", mime: str = "audio/ogg") -> str:
     """Transcribe Telegram voice/audio/video-note through Groq Whisper."""
@@ -645,10 +800,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(user_id, "user", f"[фото] {caption}")
         result = normalize_telegram_reply(result)
         save_message(user_id, "assistant", result, "vision")
-        send_msg(result, str(update.effective_chat.id))
+        if not send_msg(result, str(update.effective_chat.id)):
+            await reply_text_with_retry(update, result)
     except Exception as e:
         import traceback; log.error(traceback.format_exc())
-        send_msg(f"⚠️ Ошибка анализа фото: {str(e)[:200]}", str(update.effective_chat.id))
+        msg = f"⚠️ Ошибка анализа фото: {str(e)[:200]}"
+        if not send_msg(msg, str(update.effective_chat.id)):
+            await reply_text_with_retry(update, msg)
     finally:
         if path:
             try: os.unlink(path)
@@ -682,9 +840,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             content = await loop.run_in_executor(_executor, lambda: extract_text_from_file(path))
             if content is None:
-                send_msg(f"⚠️ Формат {ext or '?'} пока не поддержан для анализа. "
-                         f"Поддерживаю: pdf, docx, xlsx, txt/md/csv/код, картинки.",
-                         str(update.effective_chat.id))
+                msg = (f"⚠️ Формат {ext or '?'} пока не поддержан для анализа. "
+                       f"Поддерживаю: pdf, docx, xlsx, txt/md/csv/код, картинки.")
+                if not send_msg(msg, str(update.effective_chat.id)):
+                    await reply_text_with_retry(update, msg)
                 return
             task = caption or "Кратко суммируй документ, выдели ключевое и предложи действия по проекту Amori."
             system = (f"Ты — аналитик-ассистент Дениса (CEO Amori).\n{PROJECT_BRIEF}\n"
@@ -697,10 +856,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(user_id, "user", f"[документ {fname}] {caption}")
         result = normalize_telegram_reply(result)
         save_message(user_id, "assistant", result, "document")
-        send_msg(result, str(update.effective_chat.id))
+        if not send_msg(result, str(update.effective_chat.id)):
+            await reply_text_with_retry(update, result)
     except Exception as e:
         import traceback; log.error(traceback.format_exc())
-        send_msg(f"⚠️ Ошибка обработки документа: {str(e)[:200]}", str(update.effective_chat.id))
+        msg = f"⚠️ Ошибка обработки документа: {str(e)[:200]}"
+        if not send_msg(msg, str(update.effective_chat.id)):
+            await reply_text_with_retry(update, msg)
     finally:
         if path:
             try: os.unlink(path)
@@ -722,7 +884,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = normalize_telegram_reply(execute_tool(pending["type"], pending["params"], history))
             resolve_pending(pending["id"], "confirmed")
             save_message(user_id, "assistant", result, pending["type"])
-            send_msg(result, update.effective_chat.id)
+            if not send_msg(result, str(update.effective_chat.id)):
+                await reply_text_with_retry(update, result)
             return
 
     if text.lower() in ["нет", "отмена", "cancel", "no"]:
@@ -757,11 +920,27 @@ async def process_message(update: Update, context, text: str, user_id: str):
             response = await loop.run_in_executor(_executor, lambda: tool_direct_answer(text, history))
             response = normalize_telegram_reply(response)
             save_message(user_id, "assistant", response, "answer")
-            send_msg(response, str(update.effective_chat.id))
+            if not send_msg(response, str(update.effective_chat.id)):
+                await reply_text_with_retry(update, response)
             return
 
         if needs_confirmation:
-            confirmation_text = normalize_telegram_reply(decision.get("confirmation_text", f"Выполнить: {tool}?"))
+            if tool == "change_calendar_event":
+                plan = await loop.run_in_executor(
+                    _executor,
+                    lambda: tool_plan_calendar_change(params.get("text", "")),
+                )
+                if not plan.get("ok"):
+                    response = normalize_telegram_reply(plan.get("message", "Не смог подготовить изменение календаря."))
+                    save_message(user_id, "assistant", response, tool)
+                    if not send_msg(response, str(update.effective_chat.id)):
+                        await reply_text_with_retry(update, response)
+                    return
+                params = {**params, "plan": plan}
+                confirmation_text = plan["message"]
+            else:
+                confirmation_text = decision.get("confirmation_text", f"Выполнить: {tool}?")
+            confirmation_text = normalize_telegram_reply(confirmation_text)
             action_id = save_pending(user_id, tool, params)
             save_message(user_id, "assistant", confirmation_text)
             await update.message.reply_text(
@@ -771,13 +950,16 @@ async def process_message(update: Update, context, text: str, user_id: str):
             result = await loop.run_in_executor(_executor, lambda: execute_tool(tool, params, history))
             result = normalize_telegram_reply(result)
             save_message(user_id, "assistant", result, tool)
-            send_msg(result, str(update.effective_chat.id))
+            if not send_msg(result, str(update.effective_chat.id)):
+                await reply_text_with_retry(update, result)
 
     except Exception as e:
         import traceback
         log.error(f"Orchestrator error: {e}")
         log.error(traceback.format_exc())
-        send_msg("⚠️ Ошибка: " + str(e)[:200] + "\n\nПопробуй ещё раз.", str(update.effective_chat.id))
+        msg = "⚠️ Ошибка: " + str(e)[:200] + "\n\nПопробуй ещё раз."
+        if not send_msg(msg, str(update.effective_chat.id)):
+            await reply_text_with_retry(update, msg)
 
 async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ответить клиенту: /reply_123 текст ответа"""
@@ -848,6 +1030,7 @@ def main():
     app.add_handler(CommandHandler("agents", handle_agents))
     app.add_handler(CommandHandler("leads", handle_leads))
     app.add_handler(CommandHandler("content", handle_content_command))
+    app.add_handler(CommandHandler("calendar", handle_calendar_command))
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))
     app.add_handler(CommandHandler("tickets", handle_tickets))

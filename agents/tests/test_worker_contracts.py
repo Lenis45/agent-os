@@ -79,6 +79,34 @@ def test_orchestrator_reply_normalizer_removes_markdown_for_telegram():
     assert "Отвечу коротко." in out
 
 
+def test_orchestrator_send_msg_retries_transient_telegram_error(monkeypatch):
+    calls = {"count": 0}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise TimeoutError("handshake operation timed out")
+        return FakeResponse()
+
+    monkeypatch.setenv("ORCHESTRATOR_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_MY_ID", "123")
+    monkeypatch.setattr(orchestrator.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda *_: None)
+
+    assert orchestrator.send_msg("готово", "123") is True
+    assert calls["count"] == 2
+
+
 def test_dev_worker_contract_forbids_fake_applied_work():
     src = (AGENTS_DIR / "worker_handlers.py").read_text(encoding="utf-8")
     assert "нет прямого доступа менять репозитории" in src
