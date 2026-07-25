@@ -128,6 +128,10 @@ Customer data does not belong in `ops_db` except derived operational metadata.
 | `infra_monitor` | `infra_monitor.py` | schedule | System health checks and alerting |
 | `provider_health` | `provider_health.py` | schedule/on-demand | LLM provider checks |
 
+### Hypothesis Hub bridge
+
+Emilia can analyse the live portfolio of product hypotheses through `/hypotheses` or a normal message mentioning RICE, prioritisation or experiments. The bridge in `hypothesis_hub.py` reads the Hub API only; it never writes hypotheses or changes statuses. Set `HYPOTHESIS_HUB_API_URL` and, for a production Hub, the matching `HYPOTHESIS_HUB_TOKEN` in `agents/.env`.
+
 ---
 
 ## Queue Workers
