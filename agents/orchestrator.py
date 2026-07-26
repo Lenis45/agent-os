@@ -18,6 +18,7 @@ import db
 import llm
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
+from telegram_format import normalize_plain_text
 
 load_dotenv()
 init_db()
@@ -31,28 +32,10 @@ MAX_TELEGRAM_REPLY_CHARS = 3500
 
 def normalize_telegram_reply(text: str, max_chars: int = MAX_TELEGRAM_REPLY_CHARS) -> str:
     """Clean model output for a natural Telegram reply."""
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)
-    s = re.sub(r"__(.*?)__", r"\1", s, flags=re.S)
-    s = re.sub(r"`([^`]*)`", r"\1", s)
-    lines = []
-    for line in s.splitlines():
-        line = line.strip()
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^[*_]{1,3}\s*", "", line)
-        line = re.sub(r"\s{2,}", " ", line)
-        if line:
-            lines.append(line)
-    s = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    s = normalize_plain_text(text, max_chars=max_chars)
     if not s:
         return "Не получил содержательный ответ. Попробуй переформулировать."
-    if len(s) <= max_chars:
-        return s
-    cut = s[:max_chars].rstrip()
-    sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
-    if sentence_end >= max_chars * 0.6:
-        return cut[:sentence_end + 1]
-    return cut.rstrip(" ,;:") + "…"
+    return s
 
 def save_message(user_id: str, role: str, content: str, tool: str = None):
     conn = get_db()
@@ -1059,6 +1042,7 @@ def main():
     app.add_handler(CommandHandler("agents", handle_agents))
     app.add_handler(CommandHandler("leads", handle_leads))
     app.add_handler(CommandHandler("content", handle_content_command))
+    app.add_handler(CommandHandler("hypotheses", handle_hypotheses_command))
     app.add_handler(CommandHandler("calendar", handle_calendar_command))
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))

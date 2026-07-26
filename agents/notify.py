@@ -14,6 +14,8 @@ import time
 import json
 import urllib.request
 
+from telegram_format import normalize_plain_text
+
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -31,7 +33,8 @@ def send(text: str, level: str = "info") -> bool:
         print(f"[notify] нет TELEGRAM_BOT_TOKEN/TELEGRAM_MY_ID — пропуск ({level}): {text[:80]}")
         return False
     prefix = ICONS.get(level, "")
-    body = f"{prefix} {text}".strip()
+    clean_text = normalize_plain_text(text, max_chars=12000)
+    body = f"{prefix} {clean_text}".strip()
     chunks = [body[i:i + 4000] for i in range(0, len(body), 4000)] or [body]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     ok = True

@@ -57,6 +57,7 @@ def test_orchestrator_routes_calendar_change_with_confirmation():
 
 
 def test_calendar_change_preview_updates_numbered_event(monkeypatch):
+    monkeypatch.setattr(calendar_agent, "local_now", lambda: datetime(2026, 7, 18, 8, 30))
     events = [
         {
             "id": "evt_1",
