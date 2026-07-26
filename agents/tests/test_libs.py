@@ -5,6 +5,8 @@ import cost_guard
 import retry
 import ops_store
 import db
+import provider_health
+import router
 
 
 # ── llm.parse_json ────────────────────────────────────────────────
@@ -71,6 +73,83 @@ def test_unsupported_amori_claims_detected():
     claims = llm.unsupported_product_claims("Ошейник показывает местоположение в реальном времени и мониторит здоровье.")
     assert "real-time location" in claims
     assert "health/activity monitoring" in claims
+
+
+def test_router_checks_ollama_tags_endpoint(monkeypatch):
+    calls = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"models":[{"name":"qwen3.6:35b-a3b-q4_K_M"}]}'
+
+    def fake_urlopen(url, timeout):
+        calls["url"] = url
+        calls["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
+    monkeypatch.setenv("OLLAMA_CHECK_TIMEOUT", "1.25")
+    monkeypatch.setattr(router.urllib.request, "urlopen", fake_urlopen)
+    router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
+
+    assert router._check_ollama() is True
+    assert calls["url"] == "http://example.local:11434/api/tags"
+    assert calls["timeout"] == 1.25
+
+
+def test_router_requires_selected_ollama_model(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"models":[]}'
+
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
+    monkeypatch.setattr(router.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr(router, "_model_overrides", lambda: {})
+    router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
+
+    assert router._check_ollama(required_model="qwen3.6:35b-a3b-q4_K_M") is False
+    assert router.get_model("task_sync") == router.DEFAULT_GROQ_LITELLM_MODEL
+
+
+def test_provider_health_reports_ollama_port_timeout(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://100.77.9.84:11434")
+    monkeypatch.setattr(provider_health, "_tcp_probe", lambda *_args, **_kwargs: (False, "timeout"))
+
+    icon, status, fix = provider_health.check_ollama()
+
+    assert icon == "⚪"
+    assert "порт недоступен" in status
+    assert "ollama serve" in fix
+
+
+def test_provider_health_reports_missing_ollama_models(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"models": []}
+
+    monkeypatch.setenv("OLLAMA_REQUIRED_MODELS", "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b-q4_K_M")
+    monkeypatch.setattr(provider_health, "_tcp_probe", lambda *_args, **_kwargs: (True, "tcp ok"))
+    monkeypatch.setattr(provider_health, "_get", lambda *_args, **_kwargs: FakeResponse())
+
+    icon, status, fix = provider_health.check_ollama()
+
+    assert icon == "⚠️"
+    assert "нет моделей" in status
+    assert "ollama pull qwen3.6:35b-a3b-q4_K_M" in fix
 
 
 # ── retry ─────────────────────────────────────────────────────────

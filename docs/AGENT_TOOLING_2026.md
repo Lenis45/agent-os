@@ -18,7 +18,7 @@ As of this audit:
 
 | Tool | Local status | Update route | Role |
 | --- | --- | --- | --- |
-| Codex | `codex-cli 0.144.0-alpha.4` | Codex Desktop app update | Primary coding agent inside Codex Desktop |
+| Codex | `codex-cli 0.145.0-alpha.18` | Codex Desktop app update | Primary coding agent inside Codex Desktop |
 | Claude Code | `2.1.206` | `claude update` | Strong code planning/review runner with bundled skills |
 | Hermes | `0.18.2 (2026.7.7.2)` | `hermes update --backup --yes` | Self-improving personal agent with broad built-in skills |
 | OpenCode | `1.17.18` | `brew install/upgrade anomalyco/tap/opencode` | Open source terminal agent, extra local fallback |
@@ -107,7 +107,7 @@ shared layer is for Denis-specific operating procedures that should work across 
 | `node_repl` | enabled | no | no | no | Codex Desktop runtime tool |
 | `github` | plugin/app | enabled | no | no | Keep out of OpenCode by default to reduce context load |
 | `filesystem` | native tools | native tools | enabled | native tools | Avoid duplicate file tools where native tools exist |
-| `fetch` | native/web tools | native WebFetch | enabled | configured disabled | Enable only when explicitly needed |
+| `fetch` | native/web tools | native WebFetch | enabled | enabled | Lightweight web-content MCP where the runtime benefits from explicit fetch tooling |
 
 Keep MCP small. Large MCP tool surfaces increase prompt/context cost and make the agent less
 predictable.
@@ -130,7 +130,7 @@ It configures:
 
 - Ponytail plugin via `@dietrichgebert/ponytail`;
 - shared MCP servers: Amori, memory, sequential-thinking;
-- optional disabled fetch MCP;
+- enabled fetch MCP;
 - `.env` read protection;
 - approval prompts for edits and shell commands by default;
 - hard deny for `rm -rf *` and `git reset --hard*`;
@@ -139,8 +139,8 @@ It configures:
 OpenCode discovers skills from:
 
 - `~/.config/opencode/skills`
-- `~/.claude/skills`
 - `~/.agents/skills`
+- Ponytail plugin skills under `~/.cache/opencode/.../ponytail/skills`
 
 The sync script populates all three relevant shared paths.
 
@@ -157,6 +157,45 @@ Known local pattern:
 - Claude Code uses its own authenticated CLI flow.
 - OpenCode is installed and configured for skills/MCP/plugins, but provider auth should be done
   interactively with `/connect` or environment variables outside git.
+
+### Local Ollama Node
+
+The local model node is Windows `denis-k`. Because the Mac VPN can steal the Tailscale IPv4
+range `100.64.0.0/10`, the working endpoint is the Tailscale IPv6 URL:
+
+```text
+http://[fd7a:115c:a1e0::b43b:954]:11434
+```
+
+Configured consumers:
+
+- `agents/.env`: `OLLAMA_API_BASE` and `OLLAMA_HOST` point to the IPv6 endpoint.
+- `router.py`: falls back to Groq if the API is down or the selected local model is missing.
+- `provider_health.py`: reports a yellow status when the API is alive but required models are absent.
+- OpenCode: provider `ollama` points to `http://[fd7a:115c:a1e0::b43b:954]:11434/v1`.
+
+Required models for the current Amori routing:
+
+| Model | Used for |
+| --- | --- |
+| `qwen3.6:35b-a3b-q4_K_M` | universal/private analysis: `task_sync`, `research_agent`, `content_agent`, `analyst_agent`, OpenCode `analysis-local` |
+| `qwen3.6:27b-q4_K_M` | local coding and complex implementation: `code_agent`, OpenCode `code-local` |
+| `gemma4:12b-it-qat` | fast local chat and quick multimodal checks: OpenCode `chat-local` |
+
+Check from the Mac:
+
+```bash
+python3 ~/ai-infra/scripts/check_remote_ollama.py
+```
+
+Install from Windows when Ollama is reachable locally:
+
+```powershell
+ollama pull qwen3.6:35b-a3b-q4_K_M
+ollama pull qwen3.6:27b-q4_K_M
+ollama pull gemma4:12b-it-qat
+ollama list
+```
 
 ## Operations
 

@@ -80,11 +80,11 @@ ROUTING = {
     "email_watchdog":     "groq/openai/gpt-oss-120b",
     "knowledge_curator":  "groq/openai/gpt-oss-120b",
     "context_translator": "groq/openai/gpt-oss-120b",
-    "task_sync":          "ollama/gpt-oss:20b",
-    "research_agent":     "ollama/gpt-oss:20b",
-    "code_agent":         "ollama/qwen2.5-coder:7b",
-    "content_agent":      "ollama/gpt-oss:20b",
-    "analyst_agent":      "ollama/gpt-oss:20b",
+    "task_sync":          "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "research_agent":     "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "code_agent":         "ollama/qwen3.6:27b-q4_K_M",
+    "content_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "analyst_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
 }
 ```
 

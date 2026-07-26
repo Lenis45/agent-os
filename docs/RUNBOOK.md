@@ -68,9 +68,36 @@ cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 -c "import ops_store; ops_sto
 3. Перезапустить затронутых агентов (unload/load).
 
 ## Ollama / GPU-нода (denis-k) недоступна
-Не авария: `router.py` сам уводит ollama-задачи на Groq. Проверить ноду:
+Не авария: `router.py` сам уводит ollama-задачи на Groq. На Mac с включённым VPN
+используй Tailscale IPv6 endpoint, потому что IPv4 `100.77.9.84` может уходить не через
+Tailscale.
+
+Проверить ноду:
 ```bash
-curl -s http://100.77.9.84:11434/ >/dev/null && echo up || echo "denis-k down"
+python3 ~/ai-infra/scripts/check_remote_ollama.py
+curl -g -s 'http://[fd7a:115c:a1e0::b43b:954]:11434/api/tags'
+```
+
+Если API отвечает, но моделей нет, на Windows выполни:
+```powershell
+ollama pull qwen3.6:35b-a3b-q4_K_M
+ollama pull qwen3.6:27b-q4_K_M
+ollama pull gemma4:12b-it-qat
+ollama list
+```
+
+Если Windows только что перезагрузился:
+1. Tailscale должен быть online под тем же аккаунтом.
+2. Ollama должна стартовать после входа пользователя.
+3. `OLLAMA_HOST` на Windows должен быть `0.0.0.0:11434`.
+4. Firewall должен разрешать `11434` для Tailscale.
+
+Проверка на Windows:
+```powershell
+curl http://127.0.0.1:11434/api/tags
+curl http://100.77.9.84:11434/api/tags
+[Environment]::GetEnvironmentVariable("OLLAMA_HOST", "User")
+[Environment]::GetEnvironmentVariable("OLLAMA_HOST", "Machine")
 ```
 
 ## Проверка карты агентов в n8n

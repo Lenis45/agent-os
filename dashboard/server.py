@@ -173,7 +173,11 @@ ROUTING_DEFAULT = {
     "chief_of_staff": "groq/openai/gpt-oss-120b",
     "email_watchdog": "groq/openai/gpt-oss-120b",
     "knowledge_curator": "groq/openai/gpt-oss-120b",
-    "task_sync": "ollama/gpt-oss:20b",
+    "task_sync": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "research_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "code_agent": "ollama/qwen3.6:27b-q4_K_M",
+    "content_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "analyst_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
     "calendar_agent": "groq/openai/gpt-oss-120b",
     "support_agent": "groq/openai/gpt-oss-120b",
     "lead_manager": "groq/openai/gpt-oss-120b",
@@ -187,9 +191,9 @@ MODEL_CHOICES = [
     "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
     "groq/qwen/qwen3-32b",            # Groq — быстрый Qwen fallback, free/dev tier
     "gemini/gemini-2.0-flash",       # Gemini — есть ключ, free tier
-    "ollama/gpt-oss:20b",            # локально (ПК с Ollama)
-    "ollama/qwen2.5-coder:7b",       # локально — код
-    "ollama/gemma3:4b",              # локальная Gemma на ПК
+    "ollama/qwen3.6:35b-a3b-q4_K_M", # локально — универсальный анализ
+    "ollama/qwen3.6:27b-q4_K_M",     # локально — код и сложные задачи
+    "ollama/gemma4:12b-it-qat",      # локально — быстрый чат
 ]
 
 

@@ -10,6 +10,9 @@ provider_health — ежедневный отчёт «на чём работае
 """
 import os
 import sys
+import socket
+import json
+from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,6 +31,21 @@ def _post(url, headers, body, timeout):
 def _get(url, headers, timeout):
     import requests
     return requests.get(url, headers=headers, timeout=timeout)
+
+
+def _tcp_probe(url: str, timeout: float = 3.0) -> tuple[bool, str]:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False, "непонятный OLLAMA_API_BASE"
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "tcp ok"
+    except socket.timeout:
+        return False, "timeout"
+    except OSError as e:
+        return False, str(e)[:80]
 
 
 # ── проверки. каждая → (icon, status_text, fix_action) ──
@@ -115,13 +133,49 @@ def check_gemini():
 
 
 def check_ollama():
-    base = os.getenv("OLLAMA_API_BASE", "http://100.77.9.84:11434")
+    base = os.getenv("OLLAMA_API_BASE", "http://[fd7a:115c:a1e0::b43b:954]:11434").rstrip("/")
+    required = [
+        item.strip()
+        for item in os.getenv(
+            "OLLAMA_REQUIRED_MODELS",
+            "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b-q4_K_M,gemma4:12b-it-qat",
+        ).split(",")
+        if item.strip()
+    ]
+    tcp_ok, tcp_status = _tcp_probe(base, timeout=float(os.getenv("OLLAMA_CHECK_TIMEOUT", "3")))
+    if not tcp_ok:
+        return (
+            "⚪",
+            f"порт недоступен ({tcp_status})",
+            (
+                f"на ПК denis-k запусти `ollama serve`; проверь OLLAMA_HOST=0.0.0.0:11434 "
+                f"и Windows Firewall для Tailscale; затем: curl --max-time 5 {base}/api/tags"
+            ),
+        )
     try:
-        import urllib.request
-        urllib.request.urlopen(base, timeout=3)
-        return ("🟢", "ok (ПК включён)", "")
-    except Exception:
-        return ("⚪", "ПК выключен", f"включи ПК {base} + `ollama serve` (Gemma/Qwen локально, бесплатно)")
+        r = _get(base + "/api/tags", {}, float(os.getenv("OLLAMA_CHECK_TIMEOUT", "5")))
+        if r.status_code != 200:
+            return ("🔴", f"HTTP {r.status_code}", f"проверь Ollama API: {base}/api/tags")
+        data = r.json() if hasattr(r, "json") else json.loads(r.text or "{}")
+        installed = {
+            str(item.get("name") or "").strip()
+            for item in data.get("models", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        if required:
+            missing = [model for model in required if model not in installed]
+            if missing:
+                pulls = " && ".join(f"ollama pull {model}" for model in missing)
+                return (
+                    "⚠️",
+                    f"API ok, но нет моделей: {', '.join(missing)}",
+                    f"на Windows выполни: {pulls}",
+                )
+        if not installed:
+            return ("⚠️", "API ok, но список моделей пуст", "на Windows установи модель: ollama pull qwen3.6:35b-a3b-q4_K_M")
+        return ("🟢", "ok (ПК включён, модели есть)", "")
+    except Exception as e:
+        return ("🔴", str(e)[:45], f"TCP есть, но HTTP API не отвечает: {base}/api/tags")
 
 
 def main():

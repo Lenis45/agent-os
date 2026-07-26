@@ -9,7 +9,7 @@
 | Узел | Tailscale IP | Роль |
 |---|---|---|
 | mac-mini (этот) | 100.66.130.21 | прод-ядро: Docker, агенты, n8n, бэкап |
-| denis-k | 100.77.9.84 | GPU-нода: Ollama (:11434), ComfyUI (:8188) |
+| denis-k | 100.77.9.84 / fd7a:115c:a1e0::b43b:954 | GPU-нода: Ollama (:11434), ComfyUI (:8188) |
 | macbook-air | 100.90.154.18 | workstation |
 | One Touch (USB) | — | внешний 1TB exFAT, off-site бэкап (`/Volumes/One Touch/amori-backups`) |
 
@@ -53,6 +53,31 @@
 - `ops_store.py` — доступ к ops_db + heartbeat/runs.
 - `notify.py` — единая отправка в Telegram (и для bash, и для python).
 - `memory.py` — Qdrant + PG память.
+
+## LLM / локальные модели
+- Основной быстрый мозг: DeepSeek V4 Flash (OpenModel), fallback Groq GPT OSS 120B.
+- Локальная GPU-нода: Windows `denis-k`, Ollama API через Tailscale IPv6:
+  `http://[fd7a:115c:a1e0::b43b:954]:11434`.
+- IPv4 `100.77.9.84:11434` может не работать на Mac при включённом VPN из-за конфликта
+  маршрута с Tailscale CGNAT `100.64.0.0/10`; поэтому в `agents/.env` используется IPv6 endpoint.
+- Требуемые Ollama-модели для локального роутинга:
+  - `qwen3.6:35b-a3b-q4_K_M` — приватный анализ: `task_sync`, `research_agent`, `content_agent`, `analyst_agent`;
+  - `qwen3.6:27b-q4_K_M` — локальный код: `code_agent`;
+  - `gemma4:12b-it-qat` — быстрый локальный чат/проверки через OpenCode.
+- Если API доступна, но нужных моделей нет, `router.py` не отдаёт несуществующую Ollama-модель,
+  а уводит задачу на Groq fallback.
+- Проверка с Mac:
+  `python3 ~/ai-infra/scripts/check_remote_ollama.py`.
+
+## Agent tooling / skills / MCP
+- Shared skills source: `~/.agents/skills` (17 личных skills Amori/Codex workflow).
+- Синхронизация: `~/ai-infra/scripts/sync_agent_skills.sh`.
+- Doctor: `~/ai-infra/scripts/agent_tooling_doctor.sh`.
+- Codex MCP: `amori`, `memory`, `sequential-thinking`, `node_repl`, `sites-design-picker`.
+- Claude MCP: `amori`, `memory`, `sequential-thinking`, `github`.
+- Hermes MCP: `amori`, `memory`, `sequential-thinking`, `filesystem`, `fetch`.
+- OpenCode MCP: `amori`, `memory`, `sequential-thinking`, `fetch`; OpenCode also reads
+  `~/.agents/skills` and the local skill collection.
 
 ## Файловая система
 ```

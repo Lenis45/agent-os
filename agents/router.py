@@ -1,5 +1,7 @@
 import os
 import time
+import urllib.request
+import json
 
 # cost_guard — опционален. Импорт защищён: если что-то не так с ops_db,
 # роутинг обязан продолжать работать (это критический путь всех агентов).
@@ -13,6 +15,7 @@ except Exception as _e:  # pragma: no cover
 # Override модели на агента из UI (ops_db.agent_config). Кэш 30с, fail-safe:
 # любая ошибка чтения → используем дефолтный ROUTING (роутинг не должен падать).
 _override = {"models": {}, "ts": 0.0}
+_ollama_cache = {"models": set(), "ok": False, "ts": 0.0, "error": ""}
 
 def _model_overrides() -> dict:
     now = time.time()
@@ -37,11 +40,11 @@ ROUTING = {
     "email_watchdog":     DEFAULT_GROQ_LITELLM_MODEL,      # почта — быстро
     "knowledge_curator":  DEFAULT_GROQ_LITELLM_MODEL,      # сохранение заметок
     "context_translator": DEFAULT_GROQ_LITELLM_MODEL,      # перевод задач — скорость важна
-    "task_sync":          "ollama/gpt-oss:20b",            # анализ задач — приватно
-    "research_agent":     "ollama/gpt-oss:20b",            # тяжёлый анализ — локально
-    "code_agent":         "ollama/qwen2.5-coder:7b",       # код — локально
-    "content_agent":      "ollama/gpt-oss:20b",            # контент — локально
-    "analyst_agent":      "ollama/gpt-oss:20b",            # данные — приватно
+    "task_sync":          "ollama/qwen3.6:35b-a3b-q4_K_M", # анализ задач — приватно
+    "research_agent":     "ollama/qwen3.6:35b-a3b-q4_K_M", # тяжёлый анализ — локально
+    "code_agent":         "ollama/qwen3.6:27b-q4_K_M",     # код — локально
+    "content_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M", # контент — локально
+    "analyst_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M", # данные — приватно
 }
 
 def get_model(agent_name: str) -> str:
@@ -52,7 +55,8 @@ def get_model(agent_name: str) -> str:
 
     # Если системник недоступен — fallback на Groq
     if model.startswith("ollama"):
-        if not _check_ollama():
+        required = model.split("/", 1)[1] if "/" in model else ""
+        if not _check_ollama(required_model=required):
             print(f"[Router] Ollama недоступен, fallback → Groq")
             return DEFAULT_GROQ_LITELLM_MODEL
 
@@ -67,16 +71,36 @@ def get_model(agent_name: str) -> str:
 
     return model
 
-def _check_ollama() -> bool:
+def _ollama_models(force: bool = False) -> tuple[bool, set[str], str]:
+    now = time.time()
+    if not force and now - _ollama_cache["ts"] < 20:
+        return bool(_ollama_cache["ok"]), set(_ollama_cache["models"]), str(_ollama_cache["error"])
     try:
-        import urllib.request
-        urllib.request.urlopen(
-            os.getenv("OLLAMA_API_BASE", "http://100.77.9.84:11434"),
-            timeout=3
-        )
-        return True
-    except:
+        base = os.getenv("OLLAMA_API_BASE", "http://[fd7a:115c:a1e0::b43b:954]:11434").rstrip("/")
+        with urllib.request.urlopen(
+            base + "/api/tags",
+            timeout=float(os.getenv("OLLAMA_CHECK_TIMEOUT", "2.5")),
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+        models = {
+            str(item.get("name") or "").strip()
+            for item in payload.get("models", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        _ollama_cache.update({"models": models, "ok": True, "ts": now, "error": ""})
+        return True, models, ""
+    except Exception as e:
+        _ollama_cache.update({"models": set(), "ok": False, "ts": now, "error": str(e)[:120]})
+        return False, set(), str(e)[:120]
+
+
+def _check_ollama(required_model: str | None = None) -> bool:
+    ok, models, _error = _ollama_models()
+    if not ok:
         return False
+    if required_model:
+        return required_model in models
+    return True
 
 if __name__ == "__main__":
     print("Роутинг моделей:")
