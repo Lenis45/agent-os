@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import subprocess
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -124,13 +125,20 @@ def telegram_bot_ok(token_env):
     token = os.getenv(token_env, "").strip()
     if not token:
         return False, "токен не настроен"
-    try:
-        request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
-        with urllib.request.urlopen(request, timeout=8) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-        return bool(payload.get("ok")), str(payload.get("description") or "ok")
-    except Exception as exc:
-        return False, str(exc)[:80]
+    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+    last_error = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+            return bool(payload.get("ok")), str(payload.get("description") or "ok")
+        except urllib.error.HTTPError as exc:
+            return False, f"HTTP {exc.code}"
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.75)
+    return False, str(last_error)[:80]
 
 
 def check_telegram():
