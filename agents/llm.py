@@ -93,8 +93,7 @@ def build_agent(agent_key: str, **agent_kwargs):
     """praisonaiagents.Agent с моделью из router (+ бюджет-гард).
 
     Для qwen-free/<tag> собираем llm-dict на FreeQwenApi, но в _AGENT_BUILD храним
-    ИСХОДНУЮ строку модели — empty→groq fallback в run() проверяет строку
-    (``"groq" not in model.lower()``), а не dict."""
+    ИСХОДНУЮ строку модели, чтобы run() исключил уже упавшую модель из цепочки."""
     from praisonaiagents import Agent
     model = agent_kwargs.pop("llm", None) or router.get_model(agent_key)
     a = Agent(llm=_resolve_llm(model), **agent_kwargs)
@@ -422,9 +421,11 @@ def _looks_garbled(text) -> bool:
 
 def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
                 model: str = None, max_tokens: int = 1500) -> str:
-    """Содержательный ответ «мозга». PRIMARY = OpenModel/DeepSeek V4 Flash (надёжный
-    Anthropic-API), FALLBACK = Groq. (Имя историческое — раньше был Qwen; Qwen-прокси
-    лёг на анти-боте. Алиас: brain_answer.) Usage пишется детерминированно."""
+    """Содержательный ответ через OpenModel и настроенную цепочку API-фолбэков.
+
+    Имя историческое: Qwen web-proxy больше не является обязательным маршрутом.
+    Алиас: brain_answer. Usage пишется детерминированно.
+    """
     result = ""
     used_model = ""
     # 1) OpenModel / DeepSeek (если есть ключ)

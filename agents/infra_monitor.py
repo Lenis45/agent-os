@@ -46,6 +46,11 @@ HTTP_CHECKS = {
     "Qdrant": "http://localhost:6333/",
     "n8n": "http://localhost:5678/healthz",
 }
+TELEGRAM_BOTS = {
+    "Emilia": "ORCHESTRATOR_BOT_TOKEN",
+    "Support": "SUPPORT_BOT_TOKEN",
+    "Secretary": "TELEGRAM_BOT_TOKEN",
+}
 # label -> (тип, макс возраст лога в часах для cron-агентов)
 AGENTS = {
     "ai.orchestrator":  ("longrun", None),
@@ -113,6 +118,31 @@ def http_ok(url):
         return True
     except Exception:
         return False
+
+
+def telegram_bot_ok(token_env):
+    token = os.getenv(token_env, "").strip()
+    if not token:
+        return False, "токен не настроен"
+    try:
+        request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+        return bool(payload.get("ok")), str(payload.get("description") or "ok")
+    except Exception as exc:
+        return False, str(exc)[:80]
+
+
+def check_telegram():
+    failed = []
+    for display_name, token_env in TELEGRAM_BOTS.items():
+        available, reason = telegram_bot_ok(token_env)
+        if not available:
+            failed.append(f"{display_name} ({reason})")
+    if failed:
+        warn.append("⚠️ Telegram API недоступен: " + "; ".join(failed))
+    else:
+        ok.append(f"telegram bots {len(TELEGRAM_BOTS)}/{len(TELEGRAM_BOTS)}")
 
 
 def launchd_state(label):
@@ -258,8 +288,9 @@ def check_logs():
 
 def run_check():
     global docker_startup_grace
+    crit.clear(); warn.clear(); ok.clear()
     docker_startup_grace = in_docker_startup_grace()
-    check_containers(); check_services(); check_agents()
+    check_containers(); check_services(); check_agents(); check_telegram()
     check_backup(); check_disk(); check_docker_bloat(); check_logs()
 
     now = datetime.now().strftime("%d.%m %H:%M")

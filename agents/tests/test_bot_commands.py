@@ -1,3 +1,5 @@
+import asyncio
+
 import bot_commands
 
 
@@ -42,3 +44,14 @@ def test_help_text_matches_registered_commands():
     for name, _ in bot_commands.SECRETARY_COMMANDS:
         if name != "start":
             assert f"/{name}" in secretary_help
+
+
+def test_command_menu_network_failure_does_not_abort_bot_startup():
+    class Bot:
+        async def set_my_commands(self, _commands):
+            raise TimeoutError("Telegram unavailable")
+
+    class Application:
+        bot = Bot()
+
+    assert asyncio.run(bot_commands.set_application_commands(Application(), "orchestrator")) is False

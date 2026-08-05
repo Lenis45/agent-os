@@ -1,4 +1,9 @@
+import logging
+
 from telegram import BotCommand
+
+
+log = logging.getLogger(__name__)
 
 
 ORCHESTRATOR_COMMANDS = (
@@ -69,11 +74,17 @@ def command_menu_text(kind: str) -> str:
     return "Команды пока не настроены."
 
 
-async def set_application_commands(application, kind: str) -> None:
+async def set_application_commands(application, kind: str) -> bool:
     if kind == "orchestrator":
         commands = ORCHESTRATOR_COMMANDS
     elif kind == "secretary":
         commands = SECRETARY_COMMANDS
     else:
         commands = SUPPORT_COMMANDS
-    await application.bot.set_my_commands(to_bot_commands(commands))
+    try:
+        await application.bot.set_my_commands(to_bot_commands(commands))
+        return True
+    except Exception as exc:
+        # The command menu is helpful but must not prevent message polling from starting.
+        log.warning("Не удалось обновить меню Telegram-команд (%s): %s", kind, exc)
+        return False

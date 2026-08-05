@@ -1034,7 +1034,7 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
-    log.info("AI Orchestrator запущен (мозг: OpenModel/DeepSeek V4 Flash, fallback Groq; vision qwen3-vl-plus)")
+    log.info("AI Orchestrator запущен (LLM: OpenModel → Gemini → Groq; vision: Qwen/Groq/Gemini)")
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
     app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()
     app.add_handler(CommandHandler("start", handle_start))
