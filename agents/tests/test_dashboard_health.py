@@ -62,3 +62,5 @@ def test_health_surfaces_unavailable_llm_and_invalid_content_as_actions():
         "project_status_stale",
         "smm_factory_down",
     }
+    lead_action = next(item for item in summary["actions"] if item["code"] == "lead_followup_overdue")
+    assert lead_action["href"] == "https://t.me/Emilia_Orchestrator_bot"

@@ -135,6 +135,7 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, surfa
         actions.append(_action(
             "lead_followup_overdue", "warning", "Просрочены контакты с лидами",
             f"Нужно связаться: {overdue} из {(leads or {}).get('total', overdue)}.", "crm",
+            "https://t.me/Emilia_Orchestrator_bot",
         ))
 
     critical = sum(item["severity"] == "critical" for item in actions)

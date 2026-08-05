@@ -456,7 +456,6 @@ Important docs:
 |---|---|---|
 | P0 | Refresh Google Calendar OAuth token | Restores calendar automation |
 | P0 | Replace invalid IMAP app password | Restores full email coverage |
-| P1 | Clean/annotate historical bad reports | Prevents old reports from polluting audits |
 | P1 | Add log rotation for large Telegram traceback logs | Keeps audit signal cleaner |
 | P1 | Add real image generation provider or ComfyUI bridge | Turns visual briefs into assets |
 | P2 | Add search API for `web_researcher` | Makes research current instead of model-memory based |

@@ -36,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("INFRA_DASH_PORT", "8099"))
 BIND = os.environ.get("INFRA_DASH_BIND", "127.0.0.1")   # localhost по умолчанию; наружу — только через reverse-proxy
 DASH_TOKEN = os.environ.get("DASH_TOKEN", "")            # если задан — требуется для мутирующих POST
+REPORT_TRUST_CUTOFF = os.environ.get("REPORT_TRUST_CUTOFF", "2026-08-05T00:00:00+03:00")
 ALLOW_ORIGIN = os.environ.get("INFRA_DASH_ORIGIN", f"http://localhost:{PORT}")
 ALLOW_ORIGINS = {
     x.strip() for x in os.environ.get(
@@ -277,9 +278,17 @@ def build_state():
             "count(t.*) FILTER (WHERE t.status='failed') failed "
             "FROM projects p LEFT JOIN tasks t ON t.project_id=p.id "
             "GROUP BY p.id ORDER BY p.created_at DESC LIMIT 12")
-        f_reports = ex.submit(psql_json, "ops_db",
+        f_reports = ex.submit(_query, "ops_db",
             "SELECT agent, kind, title, summary, to_char(ts,'MM-DD HH24:MI') ts "
-            "FROM reports ORDER BY ts DESC, id DESC LIMIT 25")
+            "FROM reports WHERE ts >= %s::timestamptz ORDER BY ts DESC, id DESC LIMIT 25",
+            (REPORT_TRUST_CUTOFF,), "all")
+        f_legacy_reports = ex.submit(
+            _query,
+            "ops_db",
+            "SELECT count(*) FROM reports WHERE ts < %s::timestamptz",
+            (REPORT_TRUST_CUTOFF,),
+            "scalar",
+        )
         f_registry = ex.submit(psql_json, "ops_db",
             "SELECT agent_key, display_name, role, domain, parent_agent, kind, enabled "
             "FROM agent_registry ORDER BY (parent_agent IS NULL) DESC, parent_agent, kind, agent_key")
@@ -333,6 +342,7 @@ def build_state():
         leads=leads,
         surfaces=surfaces,
     )
+    legacy_reports_row = f_legacy_reports.result()
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
@@ -345,7 +355,8 @@ def build_state():
         "agents": agents, "usage": usage, "runs": runs, "heartbeats": hb,
         "tier1": f_tier1.result(), "containers": containers,
         "qdrant": f_qdrant.result(), "dbs": f_dbs.result(),
-        "projects": projects, "reports": f_reports.result(),
+        "projects": projects, "reports": f_reports.result() or [],
+        "legacy_reports": int(legacy_reports_row[0] if legacy_reports_row else 0),
         "registry": f_registry.result(), "tasks": f_tasks.result(),
         "content": content, "leads": leads, "surfaces": surfaces, "health": health,
         "model_choices": MODEL_CHOICES,
