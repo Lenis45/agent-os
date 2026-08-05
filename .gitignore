@@ -4,6 +4,7 @@ agents/.en
 agents/.en.*
 agents/credentials.json
 agents/token.json
+agents/token.json.*
 agents/private_backups/
 agents/*.session
 *.session

@@ -236,7 +236,7 @@ Coverage includes:
 
 | Issue | Impact | Fix |
 |---|---|---|
-| Google Calendar `invalid_grant` | Calendar sync cannot write events | Re-auth and refresh `agents/token.json` |
+| Google Calendar `invalid_grant` | Calendar sync cannot write events | Run `python3 scripts/reauthorize_calendar.py` and confirm access in Google |
 | One IMAP `AUTHENTICATIONFAILED` | One mailbox missing from digest | Generate new app password |
-| Historical June reports contain bad claims | Audit flags old data | Mark or archive old reports after review |
-| Telegram polling tracebacks | Log noise | Long-running services recover; improve log filtering/rotation later |
+| Historical reports before hardening | Kept for audit, hidden from current results | No action; the dashboard shows only trusted new reports |
+| Telegram VPN/TLS blips | A single probe can fail transiently | Polling recovers and monitoring retries before alerting |
