@@ -120,3 +120,17 @@ def test_calendar_change_plan_applies_without_reparsing(monkeypatch):
     assert calls["event_id"] == "evt_1"
     assert calls["kwargs"]["start"]["dateTime"] == "2026-07-20T15:00:00"
     assert calls["kwargs"]["location"] == "ОСерф"
+
+
+def test_calendar_network_error_does_not_tell_user_to_replace_token():
+    guidance = calendar_agent.calendar_error_guidance("SSL EOF while connecting to oauth2.googleapis.com")
+
+    assert "VPN" in guidance
+    assert "token.json" not in guidance
+
+
+def test_calendar_invalid_grant_requests_reauthorization():
+    guidance = calendar_agent.calendar_error_guidance("invalid_grant: Token has been expired or revoked")
+
+    assert "повторная авторизация" in guidance
+    assert "token.json" in guidance
