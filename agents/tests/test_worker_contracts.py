@@ -9,6 +9,8 @@ import email_agent
 import knowledge_curator
 import orchestrator
 import support_agent
+import base_agent
+import tasks
 
 
 AGENTS_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -124,6 +126,94 @@ def test_content_factory_does_not_mark_unconfigured_channel_as_real_publish(monk
     result, info = content_factory._do_publish("telegram", {"body": "hello"})
     assert result == "manual"
     assert "ручной публикации" in info
+
+
+def test_content_factory_blocks_empty_generation_before_approval(monkeypatch):
+    inserted = {}
+    notified = []
+
+    monkeypatch.setattr(worker_handlers, "content_writer", lambda *_: "")
+    monkeypatch.setattr(
+        worker_handlers,
+        "content_designer",
+        lambda *_: (_ for _ in ()).throw(AssertionError("designer must not run without copy")),
+    )
+    monkeypatch.setattr(
+        content_factory,
+        "_insert",
+        lambda *args, **kwargs: inserted.update(kwargs) or 41,
+    )
+    monkeypatch.setattr(content_factory, "_notify_preview", lambda *args: notified.append(args))
+    monkeypatch.setattr(content_factory.report_mod, "report", lambda *args, **kwargs: None)
+
+    assert content_factory.create("Тестовый бриф") == 41
+    assert inserted["status"] == "failed"
+    assert inserted["meta"]["failed_stage"] == "copy"
+    assert notified == []
+
+
+def test_content_factory_rejects_approval_without_required_artifacts(monkeypatch):
+    monkeypatch.setattr(
+        content_factory,
+        "get",
+        lambda _cid: {
+            "id": 7,
+            "kind": "post",
+            "channel": "telegram",
+            "body": "",
+            "image_brief": "",
+        },
+    )
+    monkeypatch.setattr(
+        content_factory,
+        "_set_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid item changed status")),
+    )
+
+    result = content_factory.approve(7)
+
+    assert result["ok"] is False
+    assert result["error"] == "content_incomplete"
+    assert "текст" in result["message"]
+
+
+def test_worker_does_not_complete_task_with_empty_result(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tasks, "claim", lambda _agent: {"id": 9, "title": "Проверка", "project_id": 3})
+    monkeypatch.setattr(tasks, "dep_results", lambda _tid: [])
+    monkeypatch.setattr(tasks, "start", lambda tid: calls.append(("start", tid)))
+    monkeypatch.setattr(tasks, "complete", lambda tid, result: calls.append(("complete", tid, result)))
+    monkeypatch.setattr(tasks, "fail", lambda tid, error: calls.append(("fail", tid, str(error))))
+    monkeypatch.setattr(base_agent.report_mod, "report", lambda *args, **kwargs: None)
+    monkeypatch.setitem(base_agent.HANDLERS, "empty_worker", lambda _task: "   ")
+
+    assert base_agent.process_one("empty_worker") is True
+    assert any(call[0] == "fail" for call in calls)
+    assert not any(call[0] == "complete" for call in calls)
+
+
+def test_completing_last_task_reconciles_project(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, query, params=None):
+            statements.append((" ".join(query.split()), params))
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tasks, "_conn", Connection)
+
+    tasks.complete(12, "готово")
+
+    assert any("UPDATE projects p" in query for query, _params in statements)
 
 
 def test_email_agent_rewrites_unsafe_marketing_body(monkeypatch):

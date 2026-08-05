@@ -585,6 +585,13 @@ async def run():
         upcoming = get_upcoming_events(days=7)
     except Exception as e:
         log.error(f"Calendar unavailable: {e}")
+        try:
+            ops_store.heartbeat("calendar_agent", "warn", {
+                "message": "Google Calendar недоступен; обновите token.json",
+                "error": str(e)[:200],
+            })
+        except Exception:
+            pass
         notify.send(
             f"📅 Calendar Agent | {now_str}\n"
             f"Не смог подключиться к Google Calendar: {str(e)[:300]}\n"
@@ -677,6 +684,12 @@ EMAIL (последние 3 дня):
     result = await asyncio.to_thread(lambda: llm.run(agent, prompt, "calendar_agent"))
     data = llm.parse_json(result)
     if not isinstance(data, dict):
+        try:
+            ops_store.heartbeat("calendar_agent", "warn", {
+                "message": "LLM не вернул корректный план календаря",
+            })
+        except Exception:
+            pass
         notify.send(f"📅 Calendar Agent {now_str}\nОшибка парсинга ответа.")
         return
 
@@ -755,6 +768,14 @@ EMAIL (последние 3 дня):
     report += format_week_digest(upcoming, days=7, now=now) + "\n"
 
     notify.send(report)
+    try:
+        ops_store.heartbeat("calendar_agent", "ok", {
+            "message": "Недельный календарь проверен",
+            "events": len(upcoming),
+            "added": len(added),
+        })
+    except Exception:
+        pass
     log.info("Отчёт отправлен")
 
 if __name__ == "__main__":

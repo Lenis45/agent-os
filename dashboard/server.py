@@ -16,6 +16,7 @@ import datetime
 from decimal import Decimal
 import psycopg2
 from psycopg2 import pool as pgpool
+from health import summarize as summarize_health
 
 
 def _jsonable(v):
@@ -252,7 +253,8 @@ def build_state():
         f_runs = ex.submit(psql_json, "ops_db",
             "SELECT kind, status, to_char(ts,'MM-DD HH24:MI') ts FROM infra_runs ORDER BY ts DESC LIMIT 8")
         f_hb = ex.submit(psql_json, "ops_db",
-            "SELECT component, status, to_char(last_seen,'MM-DD HH24:MI') seen FROM infra_heartbeats ORDER BY component")
+            "SELECT component, status, last_seen, to_char(last_seen,'MM-DD HH24:MI') seen, meta "
+            "FROM infra_heartbeats ORDER BY component")
         f_cost = ex.submit(psql, "ops_db",
             "SELECT round(COALESCE(sum(cost_rub),0)::numeric,2) FROM llm_usage WHERE date_trunc('month',ts)=date_trunc('month',now())")
         f_paid = ex.submit(psql, "ops_db",
@@ -263,7 +265,9 @@ def build_state():
         f_qdrant = ex.submit(lambda: _qdrant())
         f_dbs = ex.submit(_db_summary)
         f_projects = ex.submit(psql_json, "ops_db",
-            "SELECT p.id, p.name, p.domain, p.status, "
+            "SELECT p.id, p.name, p.domain, p.status stored_status, "
+            "CASE WHEN count(t.*)>0 AND count(t.*) FILTER (WHERE t.status='done')=count(t.*) "
+            "THEN 'done' ELSE p.status END status, "
             "count(t.*) total, count(t.*) FILTER (WHERE t.status='done') done, "
             "count(t.*) FILTER (WHERE t.status IN ('queued','claimed','running')) active, "
             "count(t.*) FILTER (WHERE t.status='failed') failed "
@@ -282,16 +286,25 @@ def build_state():
             "OR updated_at > now()-interval '1 day' ORDER BY "
             "array_position(ARRAY['running','claimed','queued','failed','done'], status), id DESC LIMIT 60")
         f_content = ex.submit(psql_json, "ops_db",
-            "SELECT id, channel, kind, status, COALESCE(NULLIF(title,''), left(body,60)) title, "
+            "SELECT id, channel, kind, status original_status, "
+            "CASE WHEN status IN ('pending','approved') AND "
+            "(btrim(COALESCE(body,''))='' OR (kind IN ('post','ad_creative','landing') "
+            "AND btrim(COALESCE(image_brief,''))='')) THEN 'failed' ELSE status END status, "
+            "COALESCE(NULLIF(title,''), left(body,60)) title, "
             "left(body,400) body, left(image_brief,300) image_brief, "
-            "to_char(created_at,'MM-DD HH24:MI') created FROM content_items "
-            "ORDER BY array_position(ARRAY['pending','approved','ready','published','rejected'], status), id DESC LIMIT 20")
+            "left(review,300) review, to_char(created_at,'MM-DD HH24:MI') created FROM content_items "
+            "ORDER BY array_position(ARRAY['pending','approved','failed','ready','published','rejected'], status), id DESC LIMIT 20")
+        f_leads = ex.submit(psql_json, "customer_db",
+            "SELECT count(*) total, count(*) FILTER (WHERE next_followup_at < now() "
+            "AND status NOT IN ('converted','lost')) overdue FROM leads")
 
         usage = f_usage.result()
         usage_by_agent = {u["agent"]: {"calls": u["calls"], "last": u["last"]} for u in usage}
         containers = f_containers.result()
         runs = f_runs.result()
         hb = f_hb.result()
+        lead_rows = f_leads.result()
+        leads = lead_rows[0] if lead_rows else {"total": 0, "overdue": 0}
         budget_cap = psql("ops_db", "SELECT value FROM budget_config WHERE key='monthly_paid_cap_rub'") or "?"
 
     agents = agents_state(usage_by_agent)
@@ -304,20 +317,31 @@ def build_state():
             model = "groq/openai/gpt-oss-120b"
         a["model"] = model
         a["model_overridden"] = a["key"] in overrides
-    up = sum(1 for a in agents if a["status"] in ("running", "scheduled", "cron"))
+    projects = f_projects.result()
+    content = f_content.result()
+    health = summarize_health(
+        agents=agents,
+        containers=containers,
+        heartbeats=hb,
+        projects=projects,
+        content=content,
+        leads=leads,
+    )
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
-            "agents_up": up, "agents_total": len(agents),
+            "agents_up": health["counts"]["agents_up"],
+            "agents_total": health["counts"]["agents_required"],
+            "agents_on_demand": health["counts"]["agents_on_demand"],
             "containers_up": sum(1 for v in containers.values() if v), "containers_total": len(containers),
             "month_cost": f_cost.result() or "0", "paid_cost": f_paid.result() or "0", "paid_cap": budget_cap,
         },
         "agents": agents, "usage": usage, "runs": runs, "heartbeats": hb,
         "tier1": f_tier1.result(), "containers": containers,
         "qdrant": f_qdrant.result(), "dbs": f_dbs.result(),
-        "projects": f_projects.result(), "reports": f_reports.result(),
+        "projects": projects, "reports": f_reports.result(),
         "registry": f_registry.result(), "tasks": f_tasks.result(),
-        "content": f_content.result(),
+        "content": content, "leads": leads, "health": health,
         "model_choices": MODEL_CHOICES,
     }
 
@@ -453,6 +477,24 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     return self._send(400, json.dumps({"error": "bad id"}))
                 action = "approve" if "approve" in self.path else "reject"
+                if action == "approve":
+                    rows = psql_json(
+                        "ops_db",
+                        "SELECT body, image_brief, kind FROM content_items WHERE id=" + str(cid),
+                    )
+                    if not rows:
+                        return self._send(404, json.dumps({"error": "not found"}))
+                    item = rows[0]
+                    incomplete = not str(item.get("body") or "").strip()
+                    incomplete = incomplete or (
+                        item.get("kind") in {"post", "ad_creative", "landing"}
+                        and not str(item.get("image_brief") or "").strip()
+                    )
+                    if incomplete:
+                        return self._send(409, json.dumps({
+                            "error": "content_incomplete",
+                            "message": "Материал без текста или визуала нельзя согласовать",
+                        }))
                 ag = os.path.expanduser("~/ai-infra/agents")
                 subprocess.Popen(["/opt/anaconda3/bin/python3", os.path.join(ag, "content_factory.py"),
                                   action, str(cid)], cwd=ag)

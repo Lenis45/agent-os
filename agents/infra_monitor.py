@@ -279,8 +279,17 @@ def run_check():
 
     if OPS:
         try:
-            ops_store.heartbeat("infra_monitor", status,
-                                {"crit": len(crit), "warn": len(warn), "ok": len(ok)})
+            messages = (crit + warn)[:5]
+            ops_store.heartbeat(
+                "infra_monitor",
+                status,
+                {
+                    "crit": len(crit),
+                    "warn": len(warn),
+                    "ok": len(ok),
+                    "message": "; ".join(messages),
+                },
+            )
             ops_store.record_run("monitor", status,
                                  {"crit": crit, "warn": warn, "ok_count": len(ok)})
         except Exception as e:
