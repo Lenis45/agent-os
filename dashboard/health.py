@@ -88,7 +88,7 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, surfa
             continue
         component_names = {
             "calendar_agent": "Календарь",
-            "infra_monitor": "Хранилище Mac Mini",
+            "infra_monitor": "Инфраструктура Mac Mini",
             "backup": "Резервное копирование",
             "restore_test": "Проверка восстановления",
             "worker_dispatch": "Очередь агентов",
