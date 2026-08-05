@@ -10,7 +10,7 @@ CRM, support, knowledge management, monitoring, and backups.
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Groq](https://img.shields.io/badge/Groq-GPT_OSS_120B-F55036)
-![DeepSeek](https://img.shields.io/badge/DeepSeek-V4_Flash-4B6BFB)
+![LLM failover](https://img.shields.io/badge/LLM-Gemini_3.6_%7C_Groq-1A73E8)
 ![Qdrant](https://img.shields.io/badge/Qdrant-vector_memory-DC244C)
 ![Telegram](https://img.shields.io/badge/Telegram-operator_UI-26A5E4?logo=telegram&logoColor=white)
 ![launchd](https://img.shields.io/badge/launchd-macOS-999999?logo=apple&logoColor=white)
@@ -125,6 +125,7 @@ flowchart TB
     subgraph External["External systems"]
         Groq["Groq<br/>GPT OSS 120B"]
         OpenModel["OpenModel<br/>DeepSeek V4 Flash"]
+        Gemini["Gemini<br/>3.6 Flash fallback"]
         Ollama["Ollama GPU node<br/>optional/local"]
         Telegram["Telegram API"]
         Google["Google Calendar"]
@@ -155,7 +156,9 @@ flowchart TB
 
     Orchestrator --> Groq
     Orchestrator --> OpenModel
+    Orchestrator --> Gemini
     Agents --> Groq
+    Agents --> Gemini
     Agents --> Ollama
     Customer --> Telegram
     Scheduled --> Google

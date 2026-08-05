@@ -125,9 +125,20 @@ def check_gemini():
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         return ("⚪", "не настроен", "добавь GEMINI_API_KEY (есть бесплатный тир)")
+    model = os.getenv("GEMINI_TEXT_MODEL", "gemini/gemini-3.6-flash").removeprefix("gemini/")
     try:
-        r = _get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", {}, 10)
-        return ("🟢", "ok (ключ валиден)", "") if r.status_code == 200 else ("🔴", f"HTTP {r.status_code}", "проверь GEMINI_API_KEY")
+        r = _post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+            {"Content-Type": "application/json"},
+            {
+                "contents": [{"role": "user", "parts": [{"text": "Reply OK"}]}],
+                "generationConfig": {"maxOutputTokens": 8, "temperature": 0},
+            },
+            20,
+        )
+        if r.status_code == 200 and r.json().get("candidates"):
+            return ("🟢", f"ok ({model})", "")
+        return ("🔴", f"HTTP {r.status_code} ({model})", "обнови GEMINI_TEXT_MODEL или проверь лимит")
     except Exception as e:
         return ("🔴", str(e)[:45], "сеть до generativelanguage.googleapis.com")
 
@@ -178,6 +189,18 @@ def check_ollama():
         return ("🔴", str(e)[:45], f"TCP есть, но HTTP API не отвечает: {base}/api/tags")
 
 
+def brain_summary(deepseek, groq, gemini):
+    """Describe the first usable provider in the configured production chain."""
+    for label, state in (
+        ("DeepSeek", deepseek),
+        ("Gemini", gemini),
+        ("Groq", groq),
+    ):
+        if state[0] == "🟢":
+            return True, f"✅ Мозг работает через {label}; остальные провайдеры остаются резервом."
+    return False, "🔴 ВНИМАНИЕ: DeepSeek, Gemini и Groq недоступны — генерация ответов остановлена."
+
+
 def main():
     import datetime
     today = datetime.date.today().strftime("%d.%m.%Y")
@@ -189,24 +212,19 @@ def main():
 
     L = [f"🩺 Здоровье LLM-провайдеров | {today}", ""]
     L.append("━━━ ОСНОВНЫЕ (мозг/воркеры) ━━━")
-    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← preferred, если есть кредит" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
-    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← активный фолбэк + воркеры" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
+    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← основной при доступном кредите" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
+    L.append(f"{gm[0]} Gemini — {gm[1]}   ← первый API-фолбэк" + (f"\n   ↳ {gm[2]}" if gm[2] else ""))
+    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← второй API-фолбэк" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
 
     L.append("\n━━━ ОТКЛЮЧЕНЫ (опциональные, не используются) ━━━")
     L.append("⏸ Qwen / GLM / Kimi — optional web-proxy выключены намеренно; чинить не нужно.")
 
     L.append("\n━━━ ЛОКАЛЬНЫЕ / ПРОЧЕЕ ━━━")
     L.append(f"{ol[0]} Ollama/Gemma (ПК) — {ol[1]}" + (f"\n   ↳ {ol[2]}" if ol[2] else ""))
-    L.append(f"{gm[0]} Gemini — {gm[1]}" + (f"\n   ↳ {gm[2]}" if gm[2] else ""))
 
-    brain_ok = ds[0] == "🟢" or gr[0] == "🟢"
+    brain_ok, summary = brain_summary(ds, gr, gm)
     L.append("")
-    if ds[0] == "🟢":
-        L.append("✅ Мозг работает через DeepSeek, Groq остаётся фолбэком.")
-    elif gr[0] == "🟢":
-        L.append("✅ Мозг работает через Groq-фолбэк; DeepSeek сейчас не основной из-за статуса выше.")
-    else:
-        L.append("🔴 ВНИМАНИЕ: и DeepSeek, и Groq недоступны — мозг лежит!")
+    L.append(summary)
     L.append("ℹ️ DeepSeek/OpenModel зависит от кредита и лимитов. Qwen/GLM/Kimi выключены намеренно как optional web-proxy.")
 
     L.append("\n━━━ ЧТО ЕЩЁ МОЖНО ПОДКЛЮЧИТЬ (нужен ключ) ━━━")

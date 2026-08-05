@@ -7,6 +7,7 @@ import ops_store
 import db
 import provider_health
 import router
+import praisonaiagents
 
 
 # ── llm.parse_json ────────────────────────────────────────────────
@@ -68,6 +69,78 @@ def test_guard_passthrough_free():
 def test_deprecated_groq_model_is_normalized():
     assert llm.normalize_groq_model("llama-3.3-70b-versatile") == "openai/gpt-oss-120b"
     assert llm.normalize_groq_model("groq/llama-3.3-70b-versatile", litellm=True) == "groq/openai/gpt-oss-120b"
+
+
+def test_run_falls_back_from_empty_groq_to_configured_provider(monkeypatch):
+    used = []
+
+    class PrimaryAgent:
+        def start(self, _prompt):
+            return ""
+
+    class FallbackAgent:
+        def __init__(self, llm, **_kwargs):
+            used.append(llm)
+
+        def start(self, _prompt):
+            return "ответ через Gemini"
+
+    primary = PrimaryAgent()
+    llm._AGENT_BUILD[id(primary)] = ("groq/openai/gpt-oss-120b", {"name": "test"})
+    monkeypatch.setattr(llm, "fallback_models", lambda _primary=None: ["gemini/gemini-3.6-flash"])
+    monkeypatch.setattr(praisonaiagents, "Agent", FallbackAgent)
+    monkeypatch.setattr(llm, "_record", lambda *args, **kwargs: None)
+
+    result = llm.run(primary, "проверка", "orchestrator", attempts=1)
+
+    assert result == "ответ через Gemini"
+    assert used == ["gemini/gemini-3.6-flash"]
+
+
+def test_groq_chat_returns_compatible_response_from_fallback(monkeypatch):
+    class Completions:
+        @staticmethod
+        def create(**_kwargs):
+            raise TimeoutError("Groq unavailable")
+
+    class Client:
+        class Chat:
+            completions = Completions()
+
+        chat = Chat()
+
+    monkeypatch.setattr(
+        llm,
+        "_fallback_text",
+        lambda *_args, **_kwargs: ("{\"tool\":\"answer\"}", "gemini/gemini-3.6-flash"),
+        raising=False,
+    )
+
+    response = llm.groq_chat(Client(), "orchestrator", [{"role": "user", "content": "route"}])
+
+    assert response.choices[0].message.content == '{"tool":"answer"}'
+
+
+def test_fallback_text_supplies_default_agent_instructions(monkeypatch):
+    created = []
+
+    class FallbackAgent:
+        def __init__(self, llm, **kwargs):
+            created.append((llm, kwargs))
+            if not any(kwargs.get(key) for key in ("name", "role", "goal", "backstory", "instructions")):
+                raise ValueError("agent identity is required")
+
+        def start(self, _prompt):
+            return "готово"
+
+    monkeypatch.setattr(llm, "fallback_models", lambda _primary=None: ["gemini/gemini-3.6-flash"])
+    monkeypatch.setattr(praisonaiagents, "Agent", FallbackAgent)
+
+    text, model = llm._fallback_text("проверка", "orchestrator", primary_model="groq/test")
+
+    assert text == "готово"
+    assert model == "gemini/gemini-3.6-flash"
+    assert created[0][1]["instructions"]
 
 def test_unsupported_amori_claims_detected():
     claims = llm.unsupported_product_claims("Ошейник показывает местоположение в реальном времени и мониторит здоровье.")
@@ -150,6 +223,18 @@ def test_provider_health_reports_missing_ollama_models(monkeypatch):
     assert icon == "⚠️"
     assert "нет моделей" in status
     assert "ollama pull qwen3.6:35b-a3b-q4_K_M" in fix
+
+
+def test_provider_health_accepts_gemini_as_working_brain():
+    ok, summary = provider_health.brain_summary(
+        ("🔴", "HTTP 402", "top up"),
+        ("🔴", "timeout", "check network"),
+        ("🟢", "ok (gemini-3.6-flash)", ""),
+    )
+
+    assert ok is True
+    assert "Gemini" in summary
+    assert "лежит" not in summary
 
 
 # ── retry ─────────────────────────────────────────────────────────

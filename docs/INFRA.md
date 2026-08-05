@@ -55,7 +55,8 @@
 - `memory.py` — Qdrant + PG память.
 
 ## LLM / локальные модели
-- Основной быстрый мозг: DeepSeek V4 Flash (OpenModel), fallback Groq GPT OSS 120B.
+- Цепочка API-моделей: DeepSeek V4 Flash (при доступном кредите) → Gemini 3.6 Flash → Groq GPT OSS 120B.
+- Проверка Gemini выполняет короткую реальную генерацию выбранной моделью, а не только проверяет ключ.
 - Локальная GPU-нода: Windows `denis-k`, Ollama API через Tailscale IPv6:
   `http://[fd7a:115c:a1e0::b43b:954]:11434`.
 - IPv4 `100.77.9.84:11434` может не работать на Mac при включённом VPN из-за конфликта

@@ -191,7 +191,7 @@ MODEL_CHOICES = [
     "qwen-free/qwen3-coder-plus",    # Qwen — для кода, free
     "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
     "groq/qwen/qwen3-32b",            # Groq — быстрый Qwen fallback, free/dev tier
-    "gemini/gemini-2.0-flash",       # Gemini — есть ключ, free tier
+    "gemini/gemini-3.6-flash",       # Gemini — рабочий API fallback
     "ollama/qwen3.6:35b-a3b-q4_K_M", # локально — универсальный анализ
     "ollama/qwen3.6:27b-q4_K_M",     # локально — код и сложные задачи
     "ollama/gemma4:12b-it-qat",      # локально — быстрый чат

@@ -20,7 +20,7 @@ agent = Agent(
     name="test",
     role="assistant",
     goal="answer briefly",
-    llm="gemini/gemini-2.0-flash"
+    llm="gemini/gemini-3.6-flash"
 )
 result = agent.start("Say exactly: CONNECTED")
 print(f"✅ Gemini — OK")
