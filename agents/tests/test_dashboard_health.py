@@ -28,6 +28,7 @@ def test_on_demand_agent_is_not_counted_as_required():
         projects=[],
         content=[],
         leads={"total": 0, "overdue": 0},
+        surfaces={"smm_factory": True, "pixel_office": True},
     )
 
     assert summary["counts"]["agents_up"] == 1
@@ -44,14 +45,20 @@ def test_health_surfaces_unavailable_llm_and_invalid_content_as_actions():
         containers={"ai_postgres": True},
         heartbeats=[{"component": "llm_groq", "status": "warn", "last_seen": old, "meta": {"status": "timeout"}}],
         projects=[{"id": 4, "status": "active", "total": 2, "done": 2, "failed": 0}],
-        content=[{"id": 5, "status": "pending", "kind": "post", "body": "", "image_brief": ""}],
+        content=[
+            {"id": 5, "status": "pending", "kind": "post", "body": "", "image_brief": ""},
+            {"id": 6, "status": "failed", "kind": "post", "body": "", "image_brief": ""},
+        ],
         leads={"total": 14, "overdue": 14},
+        surfaces={"smm_factory": False, "pixel_office": True},
     )
 
     assert summary["status"] == "blocked"
     assert {item["code"] for item in summary["actions"]} >= {
         "llm_unavailable",
         "content_incomplete",
+        "content_generation_failed",
         "lead_followup_overdue",
         "project_status_stale",
+        "smm_factory_down",
     }

@@ -38,7 +38,7 @@ actions such as publishing or outbound communication.
 
 ## Current State Snapshot
 
-Last verified: **2026-07-09** on the local Mac host.
+Last verified: **2026-08-05** on the local Mac host.
 
 | Area | Current fact |
 |---|---|
@@ -46,9 +46,9 @@ Last verified: **2026-07-09** on the local Mac host.
 | Containers | 5/5 up: Postgres, Qdrant, Redis, Langfuse, n8n |
 | Dashboard | `http://localhost:8099` |
 | Pixel office | `http://localhost:5070` |
-| Agent dashboard status | 8/9 running/scheduled/on-demand in the control panel |
-| Queue | No active queued tasks at last check |
-| Tests | `90 passed` in `agents/tests` |
+| Agent dashboard status | 8/8 required agents available + 1 on-demand agent |
+| Queue | No active queued or failed tasks at last check |
+| Tests | `132 passed` in `agents/tests` |
 | Default Groq model | `groq/openai/gpt-oss-120b` |
 | Paid API budget | 2500 RUB cap, current paid spend shown as 0.00 RUB |
 | Restore test | Passing; latest backup restored into a disposable Postgres container |
@@ -342,10 +342,11 @@ cd ~/ai-infra/agents
 
 | Interface | URL / command | Purpose |
 |---|---|---|
-| Dashboard | `http://localhost:8099` | Main control panel: projects, content, reports, system, agents, budget |
+| Dashboard | `http://localhost:8099` | Founder action center: decisions, projects, results, system health |
 | Dashboard docs | `http://localhost:8099/docs` | Rendered `docs/HOW_IT_WORKS.md` |
-| Ambient office | `http://localhost:8099/office` | Lightweight operational overview |
-| Pixel office | `http://localhost:5070` | Visual agent office |
+| Pixel office alias | `http://localhost:8099/office` | Redirects to the canonical visual office |
+| Pixel office | `http://localhost:5070` | Visual agent office; not the source of operational truth |
+| SMM Factory | `http://localhost:8180` | Primary workspace for copy, images, approval, scheduling, and publishing |
 | Telegram | private bots | Founder command surface and support |
 | MCP | `mcp/` | Read-only analytics/tools for Codex, Claude, Hermes |
 

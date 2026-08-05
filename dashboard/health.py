@@ -31,12 +31,20 @@ def _parse_datetime(value):
         return None
 
 
-def summarize(*, agents, containers, heartbeats, projects, content, leads, now=None):
+def summarize(*, agents, containers, heartbeats, projects, content, leads, surfaces=None, now=None):
     now = now or datetime.now(UTC)
     required_agents = [agent for agent in agents if agent.get("type") != "ondemand"]
     agents_up = sum(agent.get("status") in UP_AGENT_STATUSES for agent in required_agents)
     containers_up = sum(bool(value) for value in containers.values())
     actions = []
+    surfaces = surfaces or {}
+
+    if surfaces.get("smm_factory") is False:
+        actions.append(_action(
+            "smm_factory_down", "critical", "SMM-редакция недоступна",
+            "Нельзя подготовить, согласовать или запланировать публикацию.",
+            "content", "http://localhost:8180",
+        ))
 
     down_containers = [name for name, running in containers.items() if not running]
     if down_containers:
@@ -78,8 +86,16 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, now=N
         if (component.startswith("llm_") or component in {"freeqwen", "freeglmkimi"}
                 or heartbeat.get("status") in {"ok", "disabled"}):
             continue
+        component_names = {
+            "calendar_agent": "Календарь",
+            "infra_monitor": "Хранилище Mac Mini",
+            "backup": "Резервное копирование",
+            "restore_test": "Проверка восстановления",
+            "worker_dispatch": "Очередь агентов",
+        }
+        title = component_names.get(component, component.replace("_", " ").title())
         actions.append(_action(
-            f"heartbeat_{component}", "warning", f"{component}: требуется внимание",
+            f"heartbeat_{component}", "warning", f"{title}: требуется внимание",
             str((heartbeat.get("meta") or {}).get("message")
                 or (heartbeat.get("meta") or {}).get("status")
                 or heartbeat.get("status") or "warning"),
@@ -95,6 +111,14 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, now=N
         actions.append(_action(
             "content_incomplete", "warning", "Неполные материалы сняты с согласования",
             f"Проверьте генерацию: {ids}.", "content", "http://localhost:8180",
+        ))
+
+    failed_content = [item for item in content if item.get("status") == "failed"]
+    if failed_content:
+        ids = ", ".join(f"#{item.get('id')}" for item in failed_content[:5])
+        actions.append(_action(
+            "content_generation_failed", "warning", "Не удалось подготовить материалы",
+            f"Повторите создание в SMM-редакции: {ids}.", "content", "http://localhost:8180",
         ))
 
     stale_projects = [item for item in projects if item.get("status") == "active"

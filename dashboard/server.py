@@ -264,6 +264,10 @@ def build_state():
         f_containers = ex.submit(lambda: {c: container_running(c) for c in CONTAINERS})
         f_qdrant = ex.submit(lambda: _qdrant())
         f_dbs = ex.submit(_db_summary)
+        f_surfaces = ex.submit(lambda: {
+            "smm_factory": http_ok("http://127.0.0.1:8180/health"),
+            "pixel_office": http_ok("http://127.0.0.1:5070/"),
+        })
         f_projects = ex.submit(psql_json, "ops_db",
             "SELECT p.id, p.name, p.domain, p.status stored_status, "
             "CASE WHEN count(t.*)>0 AND count(t.*) FILTER (WHERE t.status='done')=count(t.*) "
@@ -305,6 +309,7 @@ def build_state():
         hb = f_hb.result()
         lead_rows = f_leads.result()
         leads = lead_rows[0] if lead_rows else {"total": 0, "overdue": 0}
+        surfaces = f_surfaces.result()
         budget_cap = psql("ops_db", "SELECT value FROM budget_config WHERE key='monthly_paid_cap_rub'") or "?"
 
     agents = agents_state(usage_by_agent)
@@ -326,6 +331,7 @@ def build_state():
         projects=projects,
         content=content,
         leads=leads,
+        surfaces=surfaces,
     )
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -341,7 +347,7 @@ def build_state():
         "qdrant": f_qdrant.result(), "dbs": f_dbs.result(),
         "projects": projects, "reports": f_reports.result(),
         "registry": f_registry.result(), "tasks": f_tasks.result(),
-        "content": content, "leads": leads, "health": health,
+        "content": content, "leads": leads, "surfaces": surfaces, "health": health,
         "model_choices": MODEL_CHOICES,
     }
 
@@ -417,7 +423,11 @@ class H(BaseHTTPRequestHandler):
         elif path == "/" or path.startswith("/index"):
             self._serve_html("index.html")
         elif path.startswith("/office"):
-            self._serve_html("office.html")
+            host = self.headers.get("Host", "localhost").split(":", 1)[0]
+            host = "".join(ch for ch in host if ch.isalnum() or ch in ".-") or "localhost"
+            self.send_response(302)
+            self.send_header("Location", f"http://{host}:5070/")
+            self.end_headers()
         elif path.startswith("/api/docs"):
             try:
                 doc = os.path.expanduser("~/ai-infra/docs/HOW_IT_WORKS.md")

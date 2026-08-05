@@ -6,7 +6,7 @@ The dashboard is intentionally simple: one Python HTTP server, PostgreSQL
 connection pools, static HTML/CSS/JS, and no frontend build step. It is an
 operator console for Denis, not a public SaaS UI.
 
-Verified: **2026-07-09**.
+Verified: **2026-08-05**.
 
 ---
 
@@ -16,17 +16,17 @@ Verified: **2026-07-09**.
 
 | Section | Real data source | Purpose |
 |---|---|---|
-| Agents | launchd, cron metadata, `ops_db.llm_usage` | Status, PID, schedule, model, last calls |
-| Content factory | `ops_db.content_items` | Pending/approved/ready/published/rejected drafts |
-| Task board | `ops_db.tasks` | Queued, running, failed, done work |
-| Reports feed | `ops_db.reports` | Recent agent outputs and alerts |
-| Team | Static hierarchy + registry data | Who does what in the AI team |
-| Infrastructure | Docker, DB queries, `infra_runs`, `infra_heartbeats` | Containers, backups, restore tests, spend |
+| Today | Product-health rules over all sources below | Blocking issues, overdue actions, available workflows |
+| Work | `ops_db.projects`, `ops_db.tasks`, `ops_db.content_items` | Real project progress, queue, legacy content failures |
+| Results | `ops_db.reports` | Recent agent outputs and alerts |
+| System | launchd, Docker, DB queries, `infra_runs`, `infra_heartbeats` | Agents, containers, providers, backups, storage, spend |
+| Lead summary | `customer_db.leads` | Total and overdue follow-ups without exposing contacts |
+| SMM availability | `http://localhost:8180/health` | Whether the commercial editorial workflow can be opened |
 | Docs | `docs/HOW_IT_WORKS.md` | Russian operator explanation rendered in browser |
 
 Secondary views:
 
-- `http://localhost:8099/office` — ambient operational office view.
+- `http://localhost:8099/office` — redirect to the canonical Pixel Office.
 - `http://localhost:8099/docs` — rendered operator documentation.
 - `http://localhost:5070` — separate pixel office visualization.
 
@@ -42,13 +42,15 @@ flowchart LR
     Server --> Ops[("ops_db<br/>tasks, reports, content,<br/>usage, runs, heartbeats")]
     Server --> Customer[("customer_db<br/>leads/support summary")]
     Server --> Docs["docs/HOW_IT_WORKS.md"]
-    Server --> CLI["project_manager.py / content_factory.py<br/>write actions"]
+    Server --> SMM["SMM Factory<br/>localhost:8180"]
+    Server --> Office["Pixel Office<br/>localhost:5070"]
+    Server --> CLI["project_manager.py / content_factory.py<br/>guarded legacy actions"]
     CLI --> Ops
 ```
 
-Read-heavy requests go directly through PostgreSQL pools. Write actions call
-the existing agent CLIs so the dashboard does not duplicate project/content
-business logic.
+Read-heavy requests go directly through PostgreSQL pools. New publications are
+created only in SMM Factory; the personal dashboard links there instead of
+duplicating its editor, scheduler, approval queue, and audit trail.
 
 ---
 
@@ -68,9 +70,14 @@ The control panel currently knows about these dashboard-visible agents:
 | `lead_manager` | cron | customer | cron metadata |
 | `email_agent` | on-demand | customer | registry/on-demand metadata |
 
-The dashboard summary can show fewer "up" agents than the total if a launchd
-service is loaded but currently has no PID, or if an on-demand worker has no
-active process. That is expected and should be described as state, not hidden.
+The required-agent denominator excludes `email_agent`: it is intentionally
+on-demand and is shown separately. A healthy runtime therefore reports `8/8`
+required agents plus one on-demand agent, not a misleading `8/9` warning.
+
+The overall product status is calculated from required agents, core containers,
+available LLM routes, SMM Factory availability, operational heartbeats, failed
+content generation, stale project state, and overdue lead follow-ups. It never
+derives the green state from container uptime alone.
 
 ---
 
@@ -80,7 +87,8 @@ The dashboard must not imply that approval equals publication.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending: generated
+    [*] --> failed: empty required artifact
+    [*] --> pending: text and visual validated
     pending --> approved: Denis approves
     pending --> rejected: Denis rejects
     approved --> published: Telegram API success
@@ -95,6 +103,7 @@ stateDiagram-v2
 | `ready` | Channel is not configured; publish manually or retry after setup |
 | `published` | Telegram API accepted the send |
 | `rejected` | Human rejected the draft |
+| `failed` | Required text or visual is missing; approval and publish are blocked |
 
 The content UI should display external delivery failures as operator work, not
 as silent success.
