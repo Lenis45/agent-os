@@ -50,7 +50,10 @@
 (async function(){
   const el=document.getElementById('md');
   try{
-    const r=await fetch('/api/docs'); const txt=await r.text();
+    const queryToken=new URLSearchParams(location.search).get('t');if(queryToken){sessionStorage.setItem('amori-dash-token',queryToken);history.replaceState({},'',location.pathname)}
+    const token=sessionStorage.getItem('amori-dash-token')||'';
+    const headers=token?{Authorization:`Bearer ${token}`}:{ };
+    const r=await fetch('/api/docs',{headers}); const txt=await r.text();
     if(window.marked){ el.innerHTML=marked.parse(txt); }
     else { const pre=document.createElement('pre'); pre.textContent=txt; el.innerHTML=''; el.appendChild(pre); }
   }catch(e){ el.innerHTML='<p style="color:#FF7B72">Не удалось загрузить документ: '+e.message+'</p>'; }

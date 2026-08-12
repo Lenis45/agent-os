@@ -1,11 +1,11 @@
 services:
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:9de71018be8413f419688ac34e19dbac432d1c6d9593d2ded99a82eebefeb18f
     container_name: ai_redis
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -16,12 +16,12 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.0@sha256:1cf3e07c9f269030c7cfed0d5c0beea7bb081848a88e2ae13b35a613d4dd5019
     container_name: ai_qdrant
     restart: always
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -31,11 +31,11 @@ services:
       retries: 5
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
     container_name: ai_postgres
     restart: always
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: agents
       POSTGRES_USER: agent_user
@@ -49,11 +49,11 @@ services:
       retries: 5
 
   langfuse:
-    image: langfuse/langfuse:2
+    image: langfuse/langfuse:2.95.11@sha256:85c278dcab96c15db94191a5c1664f85aba2d7fb6771a00e99681c902c4b7015
     container_name: ai_langfuse
     restart: always
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,11 +66,11 @@ services:
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
 
   n8n:
-    image: n8nio/n8n:latest
+    image: n8nio/n8n:2.25.7@sha256:761374d4eb841b0a22771d6bd68f0e8d827b4979ae4e490045517b13fc1259dd
     container_name: ai_n8n
     restart: always
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     depends_on:
       postgres:
         condition: service_healthy

@@ -8,9 +8,8 @@ ops_db.llm_usage, Tier-1 сессии, прогоны backup/monitor/restore_tes
 
 Запуск: /opt/anaconda3/bin/python3 ~/ai-infra/dashboard/server.py  → http://localhost:8099
 """
-import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac
+import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac, ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
 
 import datetime
 from decimal import Decimal
@@ -407,13 +406,16 @@ class H(BaseHTTPRequestHandler):
             return origin
         return ALLOW_ORIGIN
     def _authed(self):
-        # DASH_TOKEN не задан → полагаемся на bind 127.0.0.1 (INFRA_DASH_BIND).
-        # Задан → мутирующие POST требуют совпадения токена (заголовок или ?t=).
+        try:
+            if ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return True
+        except ValueError:
+            pass
         if not DASH_TOKEN:
-            return True
-        got = (self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-               or self.headers.get("X-Auth-Token", "").strip()
-               or parse_qs(urlparse(self.path).query).get("t", [""])[0])
+            return False
+        auth = self.headers.get("Authorization", "").strip()
+        got = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        got = got or self.headers.get("X-Auth-Token", "").strip()
         return hmac.compare_digest(got, DASH_TOKEN)
     def do_OPTIONS(self):
         self.send_response(204)
@@ -424,11 +426,17 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Vary", "Origin"); self.end_headers()
         self.wfile.write(body.encode() if isinstance(body, str) else body)
     def do_GET(self):
         path = self.path.split("?", 1)[0]  # отрезаем query (?t=... ломал роут '/')
         if path.startswith("/api/state"):
+            if not self._authed():
+                return self._send(401, json.dumps({"error": "unauthorized"}))
             try: self._send(200, json.dumps(cached_state()))
             except Exception as e: self._send(500, json.dumps({"error": str(e)}))
         elif path == "/" or path.startswith("/index"):
@@ -440,6 +448,8 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Location", f"http://{host}:5070/")
             self.end_headers()
         elif path.startswith("/api/docs"):
+            if not self._authed():
+                return self._send(401, json.dumps({"error": "unauthorized"}))
             try:
                 doc = os.path.expanduser("~/ai-infra/docs/HOW_IT_WORKS.md")
                 with open(doc, "r", encoding="utf-8") as f:
