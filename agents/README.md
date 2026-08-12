@@ -6,7 +6,7 @@ This folder contains long-running Telegram agents, scheduled automation,
 queue workers, shared safety contracts, database helpers, audit tools, and the
 test suite that protects the system from regressions.
 
-Verified: **2026-07-09** · tests: **90 passed**.
+Verified: **2026-08-12** · tests: **158 passed**.
 
 ---
 
@@ -92,6 +92,9 @@ Rules:
 
 - UI overrides live in `ops_db.agent_config` and are cached for 30 seconds.
 - If Ollama is unavailable, router returns `groq/openai/gpt-oss-120b`.
+- Text fallback is Gemini 3.6 Flash, then Groq GPT OSS 120B.
+- OpenModel is credit-gated through `OPENMODEL_ENABLED`; it is currently disabled after HTTP 402.
+- Qwen/GLM/Kimi browser proxies are optional and excluded until a real smoke-test passes.
 - Deprecated Groq `llama-3.3-70b-versatile` is normalized away.
 - Paid model usage is guarded by `cost_guard.py`.
 

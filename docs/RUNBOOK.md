@@ -4,10 +4,10 @@
 
 ## Диагностика «всё ли живо»
 ```bash
-cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 infra_monitor.py   # полная проверка
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep ai_         # контейнеры
-launchctl list | grep -E "ai\.|amori\."                               # агенты
-cat ~/ai-infra/backups/local/status.json                              # статус бэкапа
+cd ~/ai-infra
+make doctor          # процессы, HTTP, Telegram, backup, disk
+make security-check  # права, bind-адреса, секреты, firewall
+make audit           # состояние агентов и качество последних ответов
 ```
 
 ## Алерт «контейнер не запущен»
@@ -34,13 +34,13 @@ until docker info >/dev/null 2>&1; do sleep 5; done   # ждать демон (�
 tail -40 ~/ai-infra/backups/backup.log             # что упало
 ls /Volumes/                                       # подключён ли внешний диск?
 diskutil mount /dev/disk4s1                         # примонтировать One Touch если нет
-cd ~/ai-infra/backups && ./backup.sh               # перезапустить вручную
+cd ~/ai-infra && make backup                        # перезапустить вручную
 ```
 
 ## Восстановление из бэкапа (DR)
 ```bash
 # 1. проверить, что бэкап восстановим (одноразовый контейнер, прод не трогает)
-cd ~/ai-infra/backups && ./restore_test.sh
+cd ~/ai-infra && make restore-test
 # 2. реальное восстановление БД в прод (ОСТОРОЖНО — перезапишет!)
 LATEST=$(ls -1dt ~/ai-infra/backups/local/20* | head -1)        # или с /Volumes/One Touch/amori-backups
 gunzip -c "$LATEST/pg_agents.sql.gz" | docker exec -i ai_postgres psql -U agent_user -d agents
