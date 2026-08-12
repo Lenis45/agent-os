@@ -19,6 +19,7 @@ import llm
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
 from telegram_format import normalize_plain_text
+from telegram_runtime import install_error_handler
 
 load_dotenv()
 init_db()
@@ -1034,7 +1035,9 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
-    log.info("AI Orchestrator запущен (LLM: OpenModel → Gemini → Groq; vision: Qwen/Groq/Gemini)")
+    text_chain = "OpenModel → Gemini → Groq" if llm.OPENMODEL_ENABLED else "Gemini → Groq"
+    vision_chain = "Qwen → Groq → Gemini" if llm.FREEQWEN_ENABLED else "Groq → Gemini"
+    log.info("AI Orchestrator запущен (LLM: %s; vision: %s)", text_chain, vision_chain)
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
     app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()
     app.add_handler(CommandHandler("start", handle_start))
@@ -1051,6 +1054,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    install_error_handler(app, log, "orchestrator")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

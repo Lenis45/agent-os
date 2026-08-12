@@ -1,5 +1,6 @@
 """Юнит-тесты общих библиотек инфры (v3.0). Чистые функции + безопасные round-trip в ops_db."""
 import pytest
+import requests
 import llm
 import cost_guard
 import retry
@@ -79,8 +80,8 @@ def test_run_falls_back_from_empty_groq_to_configured_provider(monkeypatch):
             return ""
 
     class FallbackAgent:
-        def __init__(self, llm, **_kwargs):
-            used.append(llm)
+        def __init__(self, model, **_kwargs):
+            used.append(model)
 
         def start(self, _prompt):
             return "ответ через Gemini"
@@ -125,8 +126,8 @@ def test_fallback_text_supplies_default_agent_instructions(monkeypatch):
     created = []
 
     class FallbackAgent:
-        def __init__(self, llm, **kwargs):
-            created.append((llm, kwargs))
+        def __init__(self, model, **kwargs):
+            created.append((model, kwargs))
             if not any(kwargs.get(key) for key in ("name", "role", "goal", "backstory", "instructions")):
                 raise ValueError("agent identity is required")
 
@@ -141,6 +142,34 @@ def test_fallback_text_supplies_default_agent_instructions(monkeypatch):
     assert text == "готово"
     assert model == "gemini/gemini-3.6-flash"
     assert created[0][1]["instructions"]
+
+
+def test_vision_skips_disabled_qwen_proxy(monkeypatch, tmp_path):
+    image = tmp_path / "pixel.png"
+    image.write_bytes(b"not-a-real-image")
+    monkeypatch.setattr(llm, "FREEQWEN_ENABLED", False)
+    monkeypatch.setattr(llm, "_freeqwen_chat", lambda *_args, **_kwargs: pytest.fail("Qwen must stay disabled"))
+    monkeypatch.setattr(llm, "_groq_vision_analyze", lambda *_args, **_kwargs: "image understood")
+    monkeypatch.setattr(llm, "_record", lambda *args, **kwargs: None)
+
+    assert llm.vision_analyze("describe", str(image)) == "image understood"
+
+
+def test_openmodel_does_not_retry_permanent_payment_error(monkeypatch):
+    response = requests.Response()
+    response.status_code = 402
+    response.url = "https://api.openmodel.ai/v1/messages"
+    calls = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(True)
+        return response
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError):
+        llm._openmodel_chat("ping", timeout=1)
+
+    assert len(calls) == 1
 
 def test_unsupported_amori_claims_detected():
     claims = llm.unsupported_product_claims("Ошейник показывает местоположение в реальном времени и мониторит здоровье.")

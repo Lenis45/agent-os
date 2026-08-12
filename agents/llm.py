@@ -69,6 +69,7 @@ _AGENT_BUILD = {}
 QWEN_FREE_PREFIX = "qwen-free/"
 FREEQWEN_API_BASE = os.getenv("FREEQWEN_API_BASE", "http://localhost:3264/api")
 FREEQWEN_API_KEY = os.getenv("FREEQWEN_API_KEY", "dummy-key")
+FREEQWEN_ENABLED = os.getenv("FREEQWEN_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.6-flash")
 GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini/gemini-3.6-flash")
@@ -96,7 +97,7 @@ def build_agent(agent_key: str, **agent_kwargs):
     ИСХОДНУЮ строку модели, чтобы run() исключил уже упавшую модель из цепочки."""
     from praisonaiagents import Agent
     model = agent_kwargs.pop("llm", None) or router.get_model(agent_key)
-    a = Agent(llm=_resolve_llm(model), **agent_kwargs)
+    a = Agent(model=_resolve_llm(model), **agent_kwargs)
     _AGENT_BUILD[id(a)] = (model, dict(agent_kwargs))  # исходная строка → fallback-пересборка
     return a
 
@@ -133,7 +134,7 @@ def _fallback_text(prompt, agent_key, *, primary_model=None, agent_kwargs=None):
     for model in fallback_models(primary_model):
         print(f"[llm] {agent_key}: fallback -> {model}")
         try:
-            candidate = Agent(llm=_resolve_llm(model), **kwargs)
+            candidate = Agent(model=_resolve_llm(model), **kwargs)
             result = candidate.start(prompt)
             if not _is_empty(result):
                 return str(result), model
@@ -332,7 +333,7 @@ def _groq_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
 
 def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
                    model: str = "qwen3-vl-plus", fallback_image_paths=None) -> str:
-    """Analyze images through Qwen vision, with Gemini as a fallback."""
+    """Analyze images through the configured vision providers with failover."""
     import base64
     content = [{"type": "text", "text": prompt}]
     for p in (image_paths if isinstance(image_paths, (list, tuple)) else [image_paths]):
@@ -346,12 +347,15 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
             url = f"data:image/{mime};base64,{b64}"
         content.append({"type": "image_url",
                         "image_url": {"url": url}})
-    try:
-        result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
-    except Exception as e:
-        print(f"[llm] vision_analyze упал: {e}")
-        result = ""
-    used_model = f"qwen-free/{model}"
+    result = ""
+    used_model = ""
+    if FREEQWEN_ENABLED:
+        try:
+            result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
+            if result:
+                used_model = f"qwen-free/{model}"
+        except Exception as e:
+            print(f"[llm] qwen vision упал: {e}")
     if _is_empty(result):
         fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
         try:
@@ -376,6 +380,7 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
 OPENMODEL_API_BASE = os.getenv("OPENMODEL_API_BASE", "https://api.openmodel.ai")
 OPENMODEL_API_KEY = os.getenv("OPENMODEL_API_KEY", "")
 OPENMODEL_MODEL = os.getenv("OPENMODEL_MODEL", "deepseek-v4-flash")
+OPENMODEL_ENABLED = os.getenv("OPENMODEL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _openmodel_chat(prompt: str, system: str = "", model: str = None,
@@ -400,6 +405,11 @@ def _openmodel_chat(prompt: str, system: str = "", model: str = None,
             r.raise_for_status()
             blocks = r.json().get("content") or []
             return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", 0)
+            if 400 <= status < 500 and status not in {408, 425, 429}:
+                raise
+            last = e
         except Exception as e:
             last = e
     raise last if last else RuntimeError("openmodel: unknown error")
@@ -429,7 +439,7 @@ def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
     result = ""
     used_model = ""
     # 1) OpenModel / DeepSeek (если есть ключ)
-    if OPENMODEL_API_KEY:
+    if OPENMODEL_ENABLED and OPENMODEL_API_KEY:
         try:
             result = _openmodel_chat(prompt, system=system, max_tokens=max_tokens)
             used_model = f"openmodel/{OPENMODEL_MODEL}"

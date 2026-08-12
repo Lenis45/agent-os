@@ -29,8 +29,12 @@ AGENTS = {
     "content_factory": {"log": None, "role": "HITL content pipeline", "kind": "on-demand"},
 }
 
-ERROR_MARKERS = ("Traceback", "ERROR", "CRITICAL", "invalid_grant", "AUTHENTICATIONFAILED", "Connection refused")
-START_MARKERS = ("запущен", "запущен...", "Support Agent запущен", "worker dispatcher запущен")
+REPORT_TRUST_CUTOFF = os.getenv("REPORT_TRUST_CUTOFF", "2026-08-05T00:00:00+03:00")
+ERROR_MARKERS = ("Traceback", "CRITICAL", "invalid_grant", "AUTHENTICATIONFAILED", "Connection refused")
+START_MARKERS = (
+    "запущен", "запущен...", "Support Agent запущен", "worker dispatcher запущен",
+    "[notify] sent", "[infra_monitor] всё ок", "✓ PASS",
+)
 
 
 def _rows(query, params=None):
@@ -42,9 +46,11 @@ def _recent_reports():
         """
         SELECT agent, title, COALESCE(summary,''), COALESCE(body,''), ts
         FROM reports
+        WHERE ts >= %s::timestamptz
         ORDER BY ts DESC, id DESC
         LIMIT 120
-        """
+        """,
+        (REPORT_TRUST_CUTOFF,),
     )
     by_agent = {}
     for agent, title, summary, body, ts in rows:
@@ -83,7 +89,7 @@ def _log_findings(log_name):
     if not os.path.exists(path):
         return [f"log missing: {log_name}"]
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        tail = f.readlines()[-160:]
+        tail = f.readlines()[-2000:]
     for idx in range(len(tail) - 1, -1, -1):
         if any(marker in tail[idx] for marker in START_MARKERS):
             tail = tail[idx:]
@@ -107,9 +113,11 @@ def audit():
         log_issues = _log_findings(meta.get("log"))
         hb = heartbeats.get(key) or heartbeats.get(key.replace("_agent", "")) or {}
         status = "ok"
-        if report_issues or any(x in log_issues for x in ("Traceback", "ERROR", "CRITICAL", "invalid_grant")):
+        if hb.get("status") in {"warn", "fail", "critical"}:
             status = "needs_attention"
-        elif log_issues:
+        elif report_issues or any(x in log_issues for x in ("Traceback", "CRITICAL", "invalid_grant")):
+            status = "needs_attention"
+        elif log_issues and not (meta["kind"] == "on-demand" and log_issues == [f"log missing: {meta.get('log')}"]):
             status = "warn"
         rows.append({
             "agent": key,

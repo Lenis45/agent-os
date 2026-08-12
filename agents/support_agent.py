@@ -17,6 +17,7 @@ import notify
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
 from telegram_format import normalize_plain_text
+from telegram_runtime import install_error_handler
 
 load_dotenv()
 init_db()
@@ -453,6 +454,7 @@ def main():
     app.add_handler(CommandHandler("contact", cmd_contact))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_message))
+    install_error_handler(app, log, "support_agent")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

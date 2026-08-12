@@ -18,6 +18,7 @@ from memory import remember, recall, is_known, init_db
 
 import notify
 import llm
+import ops_store
 from applog import get_logger
 
 load_dotenv()

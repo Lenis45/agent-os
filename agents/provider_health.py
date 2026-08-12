@@ -12,6 +12,7 @@ import os
 import sys
 import socket
 import json
+import time
 from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,14 +24,30 @@ import notify      # noqa: E402
 import ops_store   # noqa: E402
 
 
-def _post(url, headers, body, timeout):
+def _request(method, url, headers, timeout, body=None, attempts=3):
     import requests
-    return requests.post(url, headers=headers, json=body, timeout=timeout)
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            response = requests.request(method, url, headers=headers, json=body, timeout=timeout)
+            if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
+                return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                raise
+        time.sleep(1)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"{method} {url}: retry loop ended without response")
+
+
+def _post(url, headers, body, timeout):
+    return _request("POST", url, headers, timeout, body=body)
 
 
 def _get(url, headers, timeout):
-    import requests
-    return requests.get(url, headers=headers, timeout=timeout)
+    return _request("GET", url, headers, timeout)
 
 
 def _tcp_probe(url: str, timeout: float = 3.0) -> tuple[bool, str]:
@@ -54,6 +71,9 @@ def check_deepseek():
     key = os.getenv("OPENMODEL_API_KEY")
     base = os.getenv("OPENMODEL_API_BASE", "https://api.openmodel.ai").rstrip("/")
     mdl = os.getenv("OPENMODEL_MODEL", "deepseek-v4-flash")
+    enabled = os.getenv("OPENMODEL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return ("⏸", "отключён: закончился кредит", "включи OPENMODEL_ENABLED=1 после пополнения OpenModel")
     if not key:
         return ("⚪", "не настроен", "добавь OPENMODEL_API_KEY в agents/.env")
     try:
@@ -212,7 +232,7 @@ def main():
 
     L = [f"🩺 Здоровье LLM-провайдеров | {today}", ""]
     L.append("━━━ ОСНОВНЫЕ (мозг/воркеры) ━━━")
-    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← основной при доступном кредите" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
+    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← опциональный первый маршрут" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
     L.append(f"{gm[0]} Gemini — {gm[1]}   ← первый API-фолбэк" + (f"\n   ↳ {gm[2]}" if gm[2] else ""))
     L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← второй API-фолбэк" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
 
@@ -239,7 +259,8 @@ def main():
     hb = {"llm_deepseek": ds, "llm_groq": gr, "llm_gemini": gm, "llm_ollama": ol}
     for comp, s in hb.items():
         try:
-            ops_store.heartbeat(comp, "ok" if s[0] == "🟢" else "warn", {"status": s[1]})
+            status = "ok" if s[0] == "🟢" else "disabled" if s[0] == "⏸" else "warn"
+            ops_store.heartbeat(comp, status, {"status": s[1]})
         except Exception:
             pass
     for comp in ("llm_qwen", "llm_glm", "llm_kimi"):

@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -67,6 +68,13 @@ LOG_WARN_MB = int(os.getenv("LOG_WARN_MB", "20"))
 DOCKER_CACHE_WARN_GB = int(os.getenv("DOCKER_CACHE_WARN_GB", "15"))
 BACKUP_MAX_AGE_H = int(os.getenv("BACKUP_MAX_AGE_H", "26"))
 DOCKER_STARTUP_GRACE_MIN = int(os.getenv("DOCKER_STARTUP_GRACE_MIN", "45"))
+TELEGRAM_TRANSIENT_FAILURE_THRESHOLD = max(
+    1, int(os.getenv("TELEGRAM_TRANSIENT_FAILURE_THRESHOLD", "3"))
+)
+TELEGRAM_STATE_FILE = os.getenv(
+    "TELEGRAM_MONITOR_STATE_FILE",
+    os.path.join(HERE, "runtime", "telegram_health.json"),
+)
 
 crit, warn, ok = [], [], []
 docker_startup_grace = False
@@ -141,14 +149,85 @@ def telegram_bot_ok(token_env):
     return False, str(last_error)[:80]
 
 
+def _telegram_failure_is_transient(reason):
+    value = str(reason or "").lower()
+    if value.startswith("http "):
+        try:
+            return int(value.split()[1]) in {408, 425, 429, 500, 502, 503, 504}
+        except (IndexError, ValueError):
+            return False
+    markers = (
+        "timeout", "timed out", "handshake", "_ssl", "eof", "bad gateway",
+        "temporar", "connection reset", "remote disconnected", "dns",
+        "name or service", "nodename", "network is unreachable",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _load_telegram_state():
+    try:
+        with open(TELEGRAM_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_telegram_state(state):
+    directory = os.path.dirname(TELEGRAM_STATE_FILE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="telegram-health-", dir=directory, text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, TELEGRAM_STATE_FILE)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def check_telegram():
+    state = _load_telegram_state()
     failed = []
+    suppressed = []
     for display_name, token_env in TELEGRAM_BOTS.items():
         available, reason = telegram_bot_ok(token_env)
-        if not available:
-            failed.append(f"{display_name} ({reason})")
+        previous = state.get(token_env) if isinstance(state.get(token_env), dict) else {}
+        if available:
+            state[token_env] = {"streak": 0, "reason": "ok", "checked_at": time.time()}
+            continue
+
+        transient = _telegram_failure_is_transient(reason)
+        streak = int(previous.get("streak", 0)) + 1 if transient else 0
+        state[token_env] = {
+            "streak": streak,
+            "reason": str(reason)[:120],
+            "checked_at": time.time(),
+        }
+        if transient and streak < TELEGRAM_TRANSIENT_FAILURE_THRESHOLD:
+            suppressed.append(f"{display_name} {streak}/{TELEGRAM_TRANSIENT_FAILURE_THRESHOLD}")
+        else:
+            suffix = f", {streak} проверки подряд" if transient else ""
+            failed.append(f"{display_name} ({reason}{suffix})")
+
+    try:
+        _save_telegram_state(state)
+    except OSError as error:
+        warn.append(f"⚠️ не удалось сохранить состояние Telegram monitor: {error}")
     if failed:
         warn.append("⚠️ Telegram API недоступен: " + "; ".join(failed))
+    elif suppressed:
+        ok.append("telegram transient suppressed: " + ", ".join(suppressed))
     else:
         ok.append(f"telegram bots {len(TELEGRAM_BOTS)}/{len(TELEGRAM_BOTS)}")
 
