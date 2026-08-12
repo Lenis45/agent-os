@@ -60,6 +60,8 @@ def process_one(agent_key) -> bool:
         tasks.start(tid)
         handler = HANDLERS.get(agent_key, default_handler)
         result = handler(t)
+        if not str(result or "").strip():
+            raise RuntimeError("Агент не вернул полезный результат; задача оставлена в failed для повтора")
         tasks.complete(tid, result)
         report_mod.report(
             agent_key, kind="result", title=t.get("title", ""),

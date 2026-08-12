@@ -8,14 +8,14 @@ ops_db.llm_usage, Tier-1 сессии, прогоны backup/monitor/restore_tes
 
 Запуск: /opt/anaconda3/bin/python3 ~/ai-infra/dashboard/server.py  → http://localhost:8099
 """
-import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac
+import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac, ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
 
 import datetime
 from decimal import Decimal
 import psycopg2
 from psycopg2 import pool as pgpool
+from health import summarize as summarize_health
 
 
 def _jsonable(v):
@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("INFRA_DASH_PORT", "8099"))
 BIND = os.environ.get("INFRA_DASH_BIND", "127.0.0.1")   # localhost по умолчанию; наружу — только через reverse-proxy
 DASH_TOKEN = os.environ.get("DASH_TOKEN", "")            # если задан — требуется для мутирующих POST
+REPORT_TRUST_CUTOFF = os.environ.get("REPORT_TRUST_CUTOFF", "2026-08-05T00:00:00+03:00")
 ALLOW_ORIGIN = os.environ.get("INFRA_DASH_ORIGIN", f"http://localhost:{PORT}")
 ALLOW_ORIGINS = {
     x.strip() for x in os.environ.get(
@@ -173,7 +174,11 @@ ROUTING_DEFAULT = {
     "chief_of_staff": "groq/openai/gpt-oss-120b",
     "email_watchdog": "groq/openai/gpt-oss-120b",
     "knowledge_curator": "groq/openai/gpt-oss-120b",
-    "task_sync": "ollama/gpt-oss:20b",
+    "task_sync": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "research_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "code_agent": "ollama/qwen3.6:27b-q4_K_M",
+    "content_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "analyst_agent": "ollama/qwen3.6:35b-a3b-q4_K_M",
     "calendar_agent": "groq/openai/gpt-oss-120b",
     "support_agent": "groq/openai/gpt-oss-120b",
     "lead_manager": "groq/openai/gpt-oss-120b",
@@ -186,10 +191,10 @@ MODEL_CHOICES = [
     "qwen-free/qwen3-coder-plus",    # Qwen — для кода, free
     "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
     "groq/qwen/qwen3-32b",            # Groq — быстрый Qwen fallback, free/dev tier
-    "gemini/gemini-2.0-flash",       # Gemini — есть ключ, free tier
-    "ollama/gpt-oss:20b",            # локально (ПК с Ollama)
-    "ollama/qwen2.5-coder:7b",       # локально — код
-    "ollama/gemma3:4b",              # локальная Gemma на ПК
+    "gemini/gemini-3.6-flash",       # Gemini — рабочий API fallback
+    "ollama/qwen3.6:35b-a3b-q4_K_M", # локально — универсальный анализ
+    "ollama/qwen3.6:27b-q4_K_M",     # локально — код и сложные задачи
+    "ollama/gemma4:12b-it-qat",      # локально — быстрый чат
 ]
 
 
@@ -248,7 +253,8 @@ def build_state():
         f_runs = ex.submit(psql_json, "ops_db",
             "SELECT kind, status, to_char(ts,'MM-DD HH24:MI') ts FROM infra_runs ORDER BY ts DESC LIMIT 8")
         f_hb = ex.submit(psql_json, "ops_db",
-            "SELECT component, status, to_char(last_seen,'MM-DD HH24:MI') seen FROM infra_heartbeats ORDER BY component")
+            "SELECT component, status, last_seen, to_char(last_seen,'MM-DD HH24:MI') seen, meta "
+            "FROM infra_heartbeats ORDER BY component")
         f_cost = ex.submit(psql, "ops_db",
             "SELECT round(COALESCE(sum(cost_rub),0)::numeric,2) FROM llm_usage WHERE date_trunc('month',ts)=date_trunc('month',now())")
         f_paid = ex.submit(psql, "ops_db",
@@ -258,16 +264,30 @@ def build_state():
         f_containers = ex.submit(lambda: {c: container_running(c) for c in CONTAINERS})
         f_qdrant = ex.submit(lambda: _qdrant())
         f_dbs = ex.submit(_db_summary)
+        f_surfaces = ex.submit(lambda: {
+            "smm_factory": http_ok("http://127.0.0.1:8180/health"),
+            "pixel_office": http_ok("http://127.0.0.1:5070/"),
+        })
         f_projects = ex.submit(psql_json, "ops_db",
-            "SELECT p.id, p.name, p.domain, p.status, "
+            "SELECT p.id, p.name, p.domain, p.status stored_status, "
+            "CASE WHEN count(t.*)>0 AND count(t.*) FILTER (WHERE t.status='done')=count(t.*) "
+            "THEN 'done' ELSE p.status END status, "
             "count(t.*) total, count(t.*) FILTER (WHERE t.status='done') done, "
             "count(t.*) FILTER (WHERE t.status IN ('queued','claimed','running')) active, "
             "count(t.*) FILTER (WHERE t.status='failed') failed "
             "FROM projects p LEFT JOIN tasks t ON t.project_id=p.id "
             "GROUP BY p.id ORDER BY p.created_at DESC LIMIT 12")
-        f_reports = ex.submit(psql_json, "ops_db",
+        f_reports = ex.submit(_query, "ops_db",
             "SELECT agent, kind, title, summary, to_char(ts,'MM-DD HH24:MI') ts "
-            "FROM reports ORDER BY ts DESC, id DESC LIMIT 25")
+            "FROM reports WHERE ts >= %s::timestamptz ORDER BY ts DESC, id DESC LIMIT 25",
+            (REPORT_TRUST_CUTOFF,), "all")
+        f_legacy_reports = ex.submit(
+            _query,
+            "ops_db",
+            "SELECT count(*) FROM reports WHERE ts < %s::timestamptz",
+            (REPORT_TRUST_CUTOFF,),
+            "scalar",
+        )
         f_registry = ex.submit(psql_json, "ops_db",
             "SELECT agent_key, display_name, role, domain, parent_agent, kind, enabled "
             "FROM agent_registry ORDER BY (parent_agent IS NULL) DESC, parent_agent, kind, agent_key")
@@ -278,16 +298,26 @@ def build_state():
             "OR updated_at > now()-interval '1 day' ORDER BY "
             "array_position(ARRAY['running','claimed','queued','failed','done'], status), id DESC LIMIT 60")
         f_content = ex.submit(psql_json, "ops_db",
-            "SELECT id, channel, kind, status, COALESCE(NULLIF(title,''), left(body,60)) title, "
+            "SELECT id, channel, kind, status original_status, "
+            "CASE WHEN status IN ('pending','approved') AND "
+            "(btrim(COALESCE(body,''))='' OR (kind IN ('post','ad_creative','landing') "
+            "AND btrim(COALESCE(image_brief,''))='')) THEN 'failed' ELSE status END status, "
+            "COALESCE(NULLIF(title,''), left(body,60)) title, "
             "left(body,400) body, left(image_brief,300) image_brief, "
-            "to_char(created_at,'MM-DD HH24:MI') created FROM content_items "
-            "ORDER BY array_position(ARRAY['pending','approved','ready','published','rejected'], status), id DESC LIMIT 20")
+            "left(review,300) review, to_char(created_at,'MM-DD HH24:MI') created FROM content_items "
+            "ORDER BY array_position(ARRAY['pending','approved','failed','ready','published','rejected'], status), id DESC LIMIT 20")
+        f_leads = ex.submit(psql_json, "customer_db",
+            "SELECT count(*) total, count(*) FILTER (WHERE next_followup_at < now() "
+            "AND status NOT IN ('converted','lost')) overdue FROM leads")
 
         usage = f_usage.result()
         usage_by_agent = {u["agent"]: {"calls": u["calls"], "last": u["last"]} for u in usage}
         containers = f_containers.result()
         runs = f_runs.result()
         hb = f_hb.result()
+        lead_rows = f_leads.result()
+        leads = lead_rows[0] if lead_rows else {"total": 0, "overdue": 0}
+        surfaces = f_surfaces.result()
         budget_cap = psql("ops_db", "SELECT value FROM budget_config WHERE key='monthly_paid_cap_rub'") or "?"
 
     agents = agents_state(usage_by_agent)
@@ -300,20 +330,34 @@ def build_state():
             model = "groq/openai/gpt-oss-120b"
         a["model"] = model
         a["model_overridden"] = a["key"] in overrides
-    up = sum(1 for a in agents if a["status"] in ("running", "scheduled", "cron"))
+    projects = f_projects.result()
+    content = f_content.result()
+    health = summarize_health(
+        agents=agents,
+        containers=containers,
+        heartbeats=hb,
+        projects=projects,
+        content=content,
+        leads=leads,
+        surfaces=surfaces,
+    )
+    legacy_reports_row = f_legacy_reports.result()
     return {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "summary": {
-            "agents_up": up, "agents_total": len(agents),
+            "agents_up": health["counts"]["agents_up"],
+            "agents_total": health["counts"]["agents_required"],
+            "agents_on_demand": health["counts"]["agents_on_demand"],
             "containers_up": sum(1 for v in containers.values() if v), "containers_total": len(containers),
             "month_cost": f_cost.result() or "0", "paid_cost": f_paid.result() or "0", "paid_cap": budget_cap,
         },
         "agents": agents, "usage": usage, "runs": runs, "heartbeats": hb,
         "tier1": f_tier1.result(), "containers": containers,
         "qdrant": f_qdrant.result(), "dbs": f_dbs.result(),
-        "projects": f_projects.result(), "reports": f_reports.result(),
+        "projects": projects, "reports": f_reports.result() or [],
+        "legacy_reports": int(legacy_reports_row[0] if legacy_reports_row else 0),
         "registry": f_registry.result(), "tasks": f_tasks.result(),
-        "content": f_content.result(),
+        "content": content, "leads": leads, "surfaces": surfaces, "health": health,
         "model_choices": MODEL_CHOICES,
     }
 
@@ -362,13 +406,16 @@ class H(BaseHTTPRequestHandler):
             return origin
         return ALLOW_ORIGIN
     def _authed(self):
-        # DASH_TOKEN не задан → полагаемся на bind 127.0.0.1 (INFRA_DASH_BIND).
-        # Задан → мутирующие POST требуют совпадения токена (заголовок или ?t=).
+        try:
+            if ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return True
+        except ValueError:
+            pass
         if not DASH_TOKEN:
-            return True
-        got = (self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-               or self.headers.get("X-Auth-Token", "").strip()
-               or parse_qs(urlparse(self.path).query).get("t", [""])[0])
+            return False
+        auth = self.headers.get("Authorization", "").strip()
+        got = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        got = got or self.headers.get("X-Auth-Token", "").strip()
         return hmac.compare_digest(got, DASH_TOKEN)
     def do_OPTIONS(self):
         self.send_response(204)
@@ -379,18 +426,30 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Vary", "Origin"); self.end_headers()
         self.wfile.write(body.encode() if isinstance(body, str) else body)
     def do_GET(self):
         path = self.path.split("?", 1)[0]  # отрезаем query (?t=... ломал роут '/')
         if path.startswith("/api/state"):
+            if not self._authed():
+                return self._send(401, json.dumps({"error": "unauthorized"}))
             try: self._send(200, json.dumps(cached_state()))
             except Exception as e: self._send(500, json.dumps({"error": str(e)}))
         elif path == "/" or path.startswith("/index"):
             self._serve_html("index.html")
         elif path.startswith("/office"):
-            self._serve_html("office.html")
+            host = self.headers.get("Host", "localhost").split(":", 1)[0]
+            host = "".join(ch for ch in host if ch.isalnum() or ch in ".-") or "localhost"
+            self.send_response(302)
+            self.send_header("Location", f"http://{host}:5070/")
+            self.end_headers()
         elif path.startswith("/api/docs"):
+            if not self._authed():
+                return self._send(401, json.dumps({"error": "unauthorized"}))
             try:
                 doc = os.path.expanduser("~/ai-infra/docs/HOW_IT_WORKS.md")
                 with open(doc, "r", encoding="utf-8") as f:
@@ -449,6 +508,24 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     return self._send(400, json.dumps({"error": "bad id"}))
                 action = "approve" if "approve" in self.path else "reject"
+                if action == "approve":
+                    rows = psql_json(
+                        "ops_db",
+                        "SELECT body, image_brief, kind FROM content_items WHERE id=" + str(cid),
+                    )
+                    if not rows:
+                        return self._send(404, json.dumps({"error": "not found"}))
+                    item = rows[0]
+                    incomplete = not str(item.get("body") or "").strip()
+                    incomplete = incomplete or (
+                        item.get("kind") in {"post", "ad_creative", "landing"}
+                        and not str(item.get("image_brief") or "").strip()
+                    )
+                    if incomplete:
+                        return self._send(409, json.dumps({
+                            "error": "content_incomplete",
+                            "message": "Материал без текста или визуала нельзя согласовать",
+                        }))
                 ag = os.path.expanduser("~/ai-infra/agents")
                 subprocess.Popen(["/opt/anaconda3/bin/python3", os.path.join(ag, "content_factory.py"),
                                   action, str(cid)], cwd=ag)

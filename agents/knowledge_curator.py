@@ -11,6 +11,7 @@ import llm
 import db
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
+from telegram_runtime import install_error_handler
 
 load_dotenv()
 init_db()
@@ -258,6 +259,7 @@ def main():
     app.add_handler(CommandHandler("translate", handle_translate))
     app.add_handler(CommandHandler("team", handle_team))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    install_error_handler(app, log, "knowledge_curator")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

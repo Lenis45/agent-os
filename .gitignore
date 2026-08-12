@@ -4,6 +4,7 @@ agents/.en
 agents/.en.*
 agents/credentials.json
 agents/token.json
+agents/token.json.*
 agents/private_backups/
 agents/*.session
 *.session
@@ -15,6 +16,7 @@ agents/*.session
 agents/*.log
 agents/*.log.*.gz
 agents/worker.log
+agents/runtime/
 backups/backup.log
 backups/backup-osascript.log
 *.log

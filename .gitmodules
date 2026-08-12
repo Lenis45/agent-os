@@ -1,0 +1,6 @@
+[submodule "FreeQwenApi"]
+	path = FreeQwenApi
+	url = https://github.com/Lenis45/amori-qwen-proxy.git
+[submodule "office-fork"]
+	path = office-fork
+	url = https://github.com/Lenis45/amori-pixel-office.git

@@ -1,32 +1,32 @@
 # amori-infra — инвентарь (single source of truth)
 
-Последнее обновление: 2026-06-11 · хост: **Mac-mini.local** (прод-ядро, 24/7)
+Последнее обновление: 2026-08-12 · хост: **Mac-mini.local** (прод-ядро, 24/7)
 
-> Это фактическое состояние системы, а не план. Архитектурное видение — в
-> `amori_agent/docs/amori-infra-architecture-v3.html`. При расхождении приоритет у ЭТОГО файла.
+> Это краткий инвентарь. Полное проверенное состояние и известные ограничения:
+> [`SYSTEM_BASELINE_2026-08-12.md`](SYSTEM_BASELINE_2026-08-12.md).
 
 ## Узлы
 | Узел | Tailscale IP | Роль |
 |---|---|---|
 | mac-mini (этот) | 100.66.130.21 | прод-ядро: Docker, агенты, n8n, бэкап |
-| denis-k | 100.77.9.84 | GPU-нода: Ollama (:11434), ComfyUI (:8188) |
+| denis-k | 100.77.9.84 / fd7a:115c:a1e0::b43b:954 | GPU-нода: Ollama (:11434), ComfyUI (:8188) |
 | macbook-air | 100.90.154.18 | workstation |
 | One Touch (USB) | — | внешний 1TB exFAT, off-site бэкап (`/Volumes/One Touch/amori-backups`) |
 
 ## Docker-контейнеры (`~/ai-infra/docker-compose.yml`)
 | Контейнер | Образ | Порт | Назначение |
 |---|---|---|---|
-| ai_postgres | postgres:16-alpine | 5432 | БД: `agents`, `ops_db`, `n8n` |
-| ai_qdrant | qdrant/qdrant | 6333/6334 | векторная память |
-| ai_redis | redis:7-alpine | 6379 | кэш/очереди |
-| ai_langfuse | langfuse/langfuse:2 | 3000 | LLM observability |
-| ai_n8n | n8nio/n8n | 5678 | workflow-оркестратор |
+| ai_postgres | postgres:16-alpine (digest pinned) | `127.0.0.1:5432` | БД: `agents`, `ops_db`, `customer_db`, `n8n` |
+| ai_qdrant | qdrant/qdrant:v1.18.0 (digest pinned) | `127.0.0.1:6333/6334` | векторная память |
+| ai_redis | redis:7-alpine (digest pinned) | `127.0.0.1:6379` | кэш/очереди |
+| ai_langfuse | langfuse/langfuse:2.95.11 (digest pinned) | `127.0.0.1:3000` | LLM observability |
+| ai_n8n | n8nio/n8n:2.25.7 (digest pinned) | `127.0.0.1:5678` | workflow-оркестратор |
 
 ## Базы данных (в ai_postgres, user `agent_user`)
-- **`agents`** — app-данные + схема Langfuse (исторически смешаны). Таблицы: leads,
-  chief_digests, conversations, pending_actions, support_*, team_members, task_*, known_entities + Langfuse.
-- **`ops_db`** (NEW v3.0) — операционка/observability: `llm_usage`, `tier1_sessions`,
-  `budget_config`, `infra_runs`, `infra_heartbeats`.
+- **`agents`** — личная/командная память, дайджесты и исторические agent-таблицы.
+- **`ops_db`** — операционка/observability: проекты, очередь задач, отчёты, контент,
+  `llm_usage`, `budget_config`, `infra_runs`, `infra_heartbeats`.
+- **`customer_db`** — отдельный клиентский контур: лиды и support tickets/messages.
 - **`n8n`** — workflow-движок.
 
 ## Qdrant-коллекции
@@ -42,9 +42,9 @@
 | email_watchdog | email.watchdog | 8:00 | IMAP → важное → Obsidian |
 | **infra_monitor** (NEW) | ai.monitor | ежечасно | мониторинг всей инфры → Telegram при проблемах |
 | **backup** (NEW) | amori.backup | 4:00 | бэкап + off-site + ротация логов |
-| **restore_test** (NEW) | ai.restoretest | 1-е число 5:00 | проверка восстановимости бэкапа |
+| **restore_test** | ai.restoretest | Сб 5:00 | еженедельная проверка восстановимости бэкапа |
 | **digest** (NEW) | ai.digest | Пн 9:00 | еженедельная сводка инфры |
-| calendar_agent / task_sync / lead_manager | — | НЕ в расписании | есть код, плановый запуск не настроен |
+| calendar_agent / task_sync / lead_manager | cron | по расписанию | календарь, задачи и CRM-отчёты |
 
 ## Библиотеки (общие, не агенты)
 - `router.py` — выбор модели per-agent (Groq/Ollama) + бюджет-гард.
@@ -53,6 +53,35 @@
 - `ops_store.py` — доступ к ops_db + heartbeat/runs.
 - `notify.py` — единая отправка в Telegram (и для bash, и для python).
 - `memory.py` — Qdrant + PG память.
+
+## LLM / локальные модели
+- Production-цепочка API-моделей: Gemini 3.6 Flash → Groq GPT OSS 120B.
+- DeepSeek/OpenModel отключён через `OPENMODEL_ENABLED=0`, пока API отвечает HTTP 402.
+- Qwen/GLM/Kimi browser proxies исключены из production и отключены в launchd до
+  успешной повторной авторизации и real smoke-test.
+- Проверка Gemini выполняет короткую реальную генерацию выбранной моделью, а не только проверяет ключ.
+- Локальная GPU-нода: Windows `denis-k`, Ollama API через Tailscale IPv6:
+  `http://[fd7a:115c:a1e0::b43b:954]:11434`.
+- IPv4 `100.77.9.84:11434` может не работать на Mac при включённом VPN из-за конфликта
+  маршрута с Tailscale CGNAT `100.64.0.0/10`; поэтому в `agents/.env` используется IPv6 endpoint.
+- Требуемые Ollama-модели для локального роутинга:
+  - `qwen3.6:35b-a3b-q4_K_M` — приватный анализ: `task_sync`, `research_agent`, `content_agent`, `analyst_agent`;
+  - `qwen3.6:27b-q4_K_M` — локальный код: `code_agent`;
+  - `gemma4:12b-it-qat` — быстрый локальный чат/проверки через OpenCode.
+- Если API доступна, но нужных моделей нет, `router.py` не отдаёт несуществующую Ollama-модель,
+  а уводит задачу на Groq fallback.
+- Проверка с Mac:
+  `python3 ~/ai-infra/scripts/check_remote_ollama.py`.
+
+## Agent tooling / skills / MCP
+- Shared skills source: `~/.agents/skills` (17 личных skills Amori/Codex workflow).
+- Синхронизация: `~/ai-infra/scripts/sync_agent_skills.sh`.
+- Doctor: `~/ai-infra/scripts/agent_tooling_doctor.sh`.
+- Codex MCP: `amori`, `memory`, `sequential-thinking`, `node_repl`, `sites-design-picker`.
+- Claude MCP: `amori`, `memory`, `sequential-thinking`, `github`.
+- Hermes MCP: `amori`, `memory`, `sequential-thinking`, `filesystem`, `fetch`.
+- OpenCode MCP: `amori`, `memory`, `sequential-thinking`, `fetch`; OpenCode also reads
+  `~/.agents/skills` and the local skill collection.
 
 ## Файловая система
 ```
@@ -76,7 +105,8 @@
 ## Секреты
 - `~/ai-infra/agents/.env` — все токены (TG, WEEEK, Groq, Gemini, Yandex, POSTGRES_PASSWORD).
   Права: должны быть `600`. Файлы `.en`/`.env.save` — мусор/бэкапы, проверить и удалить.
-- Compose содержит PG-пароль и N8N_ENCRYPTION_KEY в открытом виде (план: secret-backend Infisical/OpenBao).
+- Compose получает пароли и encryption keys из untracked корневого `.env`; LaunchAgent
+  plist не содержат токены. Следующий уровень — отдельный local secret backend.
 
 ## Сервисные URL
-langfuse http://localhost:3000 · n8n http://localhost:5678 · qdrant http://localhost:6333/dashboard
+dashboard http://localhost:8099 · office http://localhost:5070 · langfuse http://localhost:3000 · n8n http://localhost:5678 · qdrant http://localhost:6333/dashboard

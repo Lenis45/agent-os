@@ -19,6 +19,8 @@ import sys
 import json
 import time
 import subprocess
+import tempfile
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -46,6 +48,11 @@ HTTP_CHECKS = {
     "Qdrant": "http://localhost:6333/",
     "n8n": "http://localhost:5678/healthz",
 }
+TELEGRAM_BOTS = {
+    "Emilia": "ORCHESTRATOR_BOT_TOKEN",
+    "Support": "SUPPORT_BOT_TOKEN",
+    "Secretary": "TELEGRAM_BOT_TOKEN",
+}
 # label -> (тип, макс возраст лога в часах для cron-агентов)
 AGENTS = {
     "ai.orchestrator":  ("longrun", None),
@@ -61,6 +68,13 @@ LOG_WARN_MB = int(os.getenv("LOG_WARN_MB", "20"))
 DOCKER_CACHE_WARN_GB = int(os.getenv("DOCKER_CACHE_WARN_GB", "15"))
 BACKUP_MAX_AGE_H = int(os.getenv("BACKUP_MAX_AGE_H", "26"))
 DOCKER_STARTUP_GRACE_MIN = int(os.getenv("DOCKER_STARTUP_GRACE_MIN", "45"))
+TELEGRAM_TRANSIENT_FAILURE_THRESHOLD = max(
+    1, int(os.getenv("TELEGRAM_TRANSIENT_FAILURE_THRESHOLD", "3"))
+)
+TELEGRAM_STATE_FILE = os.getenv(
+    "TELEGRAM_MONITOR_STATE_FILE",
+    os.path.join(HERE, "runtime", "telegram_health.json"),
+)
 
 crit, warn, ok = [], [], []
 docker_startup_grace = False
@@ -113,6 +127,109 @@ def http_ok(url):
         return True
     except Exception:
         return False
+
+
+def telegram_bot_ok(token_env):
+    token = os.getenv(token_env, "").strip()
+    if not token:
+        return False, "токен не настроен"
+    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+    last_error = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+            return bool(payload.get("ok")), str(payload.get("description") or "ok")
+        except urllib.error.HTTPError as exc:
+            return False, f"HTTP {exc.code}"
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.75)
+    return False, str(last_error)[:80]
+
+
+def _telegram_failure_is_transient(reason):
+    value = str(reason or "").lower()
+    if value.startswith("http "):
+        try:
+            return int(value.split()[1]) in {408, 425, 429, 500, 502, 503, 504}
+        except (IndexError, ValueError):
+            return False
+    markers = (
+        "timeout", "timed out", "handshake", "_ssl", "eof", "bad gateway",
+        "temporar", "connection reset", "remote disconnected", "dns",
+        "name or service", "nodename", "network is unreachable",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _load_telegram_state():
+    try:
+        with open(TELEGRAM_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_telegram_state(state):
+    directory = os.path.dirname(TELEGRAM_STATE_FILE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="telegram-health-", dir=directory, text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, TELEGRAM_STATE_FILE)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def check_telegram():
+    state = _load_telegram_state()
+    failed = []
+    suppressed = []
+    for display_name, token_env in TELEGRAM_BOTS.items():
+        available, reason = telegram_bot_ok(token_env)
+        previous = state.get(token_env) if isinstance(state.get(token_env), dict) else {}
+        if available:
+            state[token_env] = {"streak": 0, "reason": "ok", "checked_at": time.time()}
+            continue
+
+        transient = _telegram_failure_is_transient(reason)
+        streak = int(previous.get("streak", 0)) + 1 if transient else 0
+        state[token_env] = {
+            "streak": streak,
+            "reason": str(reason)[:120],
+            "checked_at": time.time(),
+        }
+        if transient and streak < TELEGRAM_TRANSIENT_FAILURE_THRESHOLD:
+            suppressed.append(f"{display_name} {streak}/{TELEGRAM_TRANSIENT_FAILURE_THRESHOLD}")
+        else:
+            suffix = f", {streak} проверки подряд" if transient else ""
+            failed.append(f"{display_name} ({reason}{suffix})")
+
+    try:
+        _save_telegram_state(state)
+    except OSError as error:
+        warn.append(f"⚠️ не удалось сохранить состояние Telegram monitor: {error}")
+    if failed:
+        warn.append("⚠️ Telegram API недоступен: " + "; ".join(failed))
+    elif suppressed:
+        ok.append("telegram transient suppressed: " + ", ".join(suppressed))
+    else:
+        ok.append(f"telegram bots {len(TELEGRAM_BOTS)}/{len(TELEGRAM_BOTS)}")
 
 
 def launchd_state(label):
@@ -258,8 +375,9 @@ def check_logs():
 
 def run_check():
     global docker_startup_grace
+    crit.clear(); warn.clear(); ok.clear()
     docker_startup_grace = in_docker_startup_grace()
-    check_containers(); check_services(); check_agents()
+    check_containers(); check_services(); check_agents(); check_telegram()
     check_backup(); check_disk(); check_docker_bloat(); check_logs()
 
     now = datetime.now().strftime("%d.%m %H:%M")
@@ -279,8 +397,17 @@ def run_check():
 
     if OPS:
         try:
-            ops_store.heartbeat("infra_monitor", status,
-                                {"crit": len(crit), "warn": len(warn), "ok": len(ok)})
+            messages = (crit + warn)[:5]
+            ops_store.heartbeat(
+                "infra_monitor",
+                status,
+                {
+                    "crit": len(crit),
+                    "warn": len(warn),
+                    "ok": len(ok),
+                    "message": "; ".join(messages),
+                },
+            )
             ops_store.record_run("monitor", status,
                                  {"crit": crit, "warn": warn, "ok_count": len(ok)})
         except Exception as e:

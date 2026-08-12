@@ -12,6 +12,7 @@ llm — единая обёртка работы с моделями для аг
 import os
 import re
 import json
+from types import SimpleNamespace
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -68,8 +69,10 @@ _AGENT_BUILD = {}
 QWEN_FREE_PREFIX = "qwen-free/"
 FREEQWEN_API_BASE = os.getenv("FREEQWEN_API_BASE", "http://localhost:3264/api")
 FREEQWEN_API_KEY = os.getenv("FREEQWEN_API_KEY", "dummy-key")
+FREEQWEN_ENABLED = os.getenv("FREEQWEN_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.6-flash")
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini/gemini-3.6-flash")
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
@@ -91,11 +94,10 @@ def build_agent(agent_key: str, **agent_kwargs):
     """praisonaiagents.Agent с моделью из router (+ бюджет-гард).
 
     Для qwen-free/<tag> собираем llm-dict на FreeQwenApi, но в _AGENT_BUILD храним
-    ИСХОДНУЮ строку модели — empty→groq fallback в run() проверяет строку
-    (``"groq" not in model.lower()``), а не dict."""
+    ИСХОДНУЮ строку модели, чтобы run() исключил уже упавшую модель из цепочки."""
     from praisonaiagents import Agent
     model = agent_kwargs.pop("llm", None) or router.get_model(agent_key)
-    a = Agent(llm=_resolve_llm(model), **agent_kwargs)
+    a = Agent(model=_resolve_llm(model), **agent_kwargs)
     _AGENT_BUILD[id(a)] = (model, dict(agent_kwargs))  # исходная строка → fallback-пересборка
     return a
 
@@ -104,12 +106,58 @@ def _is_empty(r) -> bool:
     return not r or not str(r).strip()
 
 
+def fallback_models(primary_model=None):
+    """Ordered, configured text fallbacks, excluding the model that just failed."""
+    configured = os.getenv(
+        "LLM_FALLBACK_MODELS",
+        f"{GEMINI_TEXT_MODEL},{GROQ_FALLBACK}",
+    )
+    primary = str(primary_model or "").lower()
+    result = []
+    for value in configured.split(","):
+        model = value.strip()
+        if not model or model.lower() == primary or model in result:
+            continue
+        if model.startswith("gemini/") and not GEMINI_API_KEY:
+            continue
+        result.append(model)
+    return result
+
+
+def _fallback_text(prompt, agent_key, *, primary_model=None, agent_kwargs=None):
+    """Try configured providers in order and return ``(text, used_model)``."""
+    from praisonaiagents import Agent
+
+    kwargs = dict(agent_kwargs or {})
+    if not any(kwargs.get(key) for key in ("name", "role", "goal", "backstory", "instructions")):
+        kwargs["instructions"] = "Отвечай по делу, точно и на языке пользователя."
+    for model in fallback_models(primary_model):
+        print(f"[llm] {agent_key}: fallback -> {model}")
+        try:
+            candidate = Agent(model=_resolve_llm(model), **kwargs)
+            result = candidate.start(prompt)
+            if not _is_empty(result):
+                return str(result), model
+        except Exception as e:
+            print(f"[llm] {agent_key} fallback {model} упал: {e}")
+    return "", ""
+
+
+def _messages_prompt(messages):
+    labels = {"system": "SYSTEM", "assistant": "ASSISTANT", "user": "USER"}
+    return "\n\n".join(
+        f"{labels.get(str(item.get('role')), 'MESSAGE')}: {item.get('content', '')}"
+        for item in messages
+    )
+
+
 def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
     """Выполнить agent.start(prompt) с ретраем. Если модель вернула пусто —
     пересобрать агента на Groq и повторить (важно: ollama/GPU-нода бывает флапает
     и отдаёт пустой ответ — раньше это давало «голый заголовок» без анализа).
     Usage пишется детерминированно."""
-    model = router.get_model(agent_key) if agent_key else "unknown"
+    build = _AGENT_BUILD.get(id(agent))
+    model = build[0] if build else (router.get_model(agent_key) if agent_key else "unknown")
 
     @net_retry(attempts=attempts)
     def _go():
@@ -121,17 +169,15 @@ def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
         result = ""
         print(f"[llm] {agent_key} вызов упал: {e}")
 
-    # Fallback: пустой ответ + знаем как пересобрать + текущая модель не groq
-    if _is_empty(result) and id(agent) in _AGENT_BUILD and "groq" not in model.lower():
-        from praisonaiagents import Agent
-        _, kwargs = _AGENT_BUILD[id(agent)]
-        print(f"[llm] {agent_key}: пустой ответ от {model} → fallback {GROQ_FALLBACK}")
-        try:
-            fb = Agent(llm=GROQ_FALLBACK, **kwargs)
-            result = fb.start(prompt)
-            model = GROQ_FALLBACK
-        except Exception as e:
-            print(f"[llm] {agent_key} groq-fallback упал: {e}")
+    if _is_empty(result) and build:
+        result, fallback_model = _fallback_text(
+            prompt,
+            agent_key,
+            primary_model=model,
+            agent_kwargs=build[1],
+        )
+        if fallback_model:
+            model = fallback_model
 
     if agent_key:
         _record(agent_key, model, prompt, result)
@@ -146,7 +192,21 @@ def groq_chat(client, agent_key: str, messages, model: str = DEFAULT_GROQ_MODEL,
     def _go():
         return client.chat.completions.create(model=model, messages=messages, **kwargs)
 
-    resp = _go()
+    try:
+        resp = _go()
+    except Exception as primary_error:
+        text, fallback_model = _fallback_text(
+            _messages_prompt(messages),
+            agent_key,
+            primary_model=f"groq/{model}",
+        )
+        if not text:
+            raise primary_error
+        _record(agent_key, fallback_model, _messages_prompt(messages), text, source="fallback")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+        )
     try:
         u = resp.usage
         cost_guard.record_usage(agent_key, f"groq/{model}",
@@ -273,7 +333,7 @@ def _groq_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
 
 def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
                    model: str = "qwen3-vl-plus", fallback_image_paths=None) -> str:
-    """Analyze images through Qwen vision, with Gemini as a fallback."""
+    """Analyze images through the configured vision providers with failover."""
     import base64
     content = [{"type": "text", "text": prompt}]
     for p in (image_paths if isinstance(image_paths, (list, tuple)) else [image_paths]):
@@ -287,12 +347,15 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
             url = f"data:image/{mime};base64,{b64}"
         content.append({"type": "image_url",
                         "image_url": {"url": url}})
-    try:
-        result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
-    except Exception as e:
-        print(f"[llm] vision_analyze упал: {e}")
-        result = ""
-    used_model = f"qwen-free/{model}"
+    result = ""
+    used_model = ""
+    if FREEQWEN_ENABLED:
+        try:
+            result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
+            if result:
+                used_model = f"qwen-free/{model}"
+        except Exception as e:
+            print(f"[llm] qwen vision упал: {e}")
     if _is_empty(result):
         fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
         try:
@@ -317,6 +380,7 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
 OPENMODEL_API_BASE = os.getenv("OPENMODEL_API_BASE", "https://api.openmodel.ai")
 OPENMODEL_API_KEY = os.getenv("OPENMODEL_API_KEY", "")
 OPENMODEL_MODEL = os.getenv("OPENMODEL_MODEL", "deepseek-v4-flash")
+OPENMODEL_ENABLED = os.getenv("OPENMODEL_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _openmodel_chat(prompt: str, system: str = "", model: str = None,
@@ -341,6 +405,11 @@ def _openmodel_chat(prompt: str, system: str = "", model: str = None,
             r.raise_for_status()
             blocks = r.json().get("content") or []
             return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", 0)
+            if 400 <= status < 500 and status not in {408, 425, 429}:
+                raise
+            last = e
         except Exception as e:
             last = e
     raise last if last else RuntimeError("openmodel: unknown error")
@@ -362,28 +431,31 @@ def _looks_garbled(text) -> bool:
 
 def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
                 model: str = None, max_tokens: int = 1500) -> str:
-    """Содержательный ответ «мозга». PRIMARY = OpenModel/DeepSeek V4 Flash (надёжный
-    Anthropic-API), FALLBACK = Groq. (Имя историческое — раньше был Qwen; Qwen-прокси
-    лёг на анти-боте. Алиас: brain_answer.) Usage пишется детерминированно."""
+    """Содержательный ответ через OpenModel и настроенную цепочку API-фолбэков.
+
+    Имя историческое: Qwen web-proxy больше не является обязательным маршрутом.
+    Алиас: brain_answer. Usage пишется детерминированно.
+    """
     result = ""
     used_model = ""
     # 1) OpenModel / DeepSeek (если есть ключ)
-    if OPENMODEL_API_KEY:
+    if OPENMODEL_ENABLED and OPENMODEL_API_KEY:
         try:
             result = _openmodel_chat(prompt, system=system, max_tokens=max_tokens)
             used_model = f"openmodel/{OPENMODEL_MODEL}"
         except Exception as e:
             print(f"[llm] openmodel упал: {e}")
             result = ""
-    # 2) Groq-фолбэк — бот не должен молчать
+    # 2) Configured fallback chain — бот не должен молчать.
     if _is_empty(result) or _looks_garbled(result):
-        try:
-            from praisonaiagents import Agent
-            fb = Agent(llm=GROQ_FALLBACK, instructions=system or "Отвечай по делу, по-русски.")
-            result = fb.start(prompt)
-            used_model = GROQ_FALLBACK
-        except Exception as e:
-            print(f"[llm] qwen_answer groq-fallback упал: {e}")
+        result, fallback_model = _fallback_text(
+            prompt,
+            agent_key,
+            primary_model=used_model,
+            agent_kwargs={"instructions": system or "Отвечай по делу, по-русски."},
+        )
+        if fallback_model:
+            used_model = fallback_model
     _record(agent_key, used_model or "unknown", prompt, result, source="brain")
     return str(result)
 

@@ -1,4 +1,9 @@
+import logging
+
 from telegram import BotCommand
+
+
+log = logging.getLogger(__name__)
 
 
 ORCHESTRATOR_COMMANDS = (
@@ -8,6 +13,7 @@ ORCHESTRATOR_COMMANDS = (
     ("tickets", "Показать открытые обращения клиентов"),
     ("leads", "Показать последние лиды и CRM-статус"),
     ("content", "Как поставить задачу контент-заводу"),
+    ("hypotheses", "Анализ гипотез, RICE и экспериментов"),
     ("calendar", "Показать, добавить или исправить событие"),
     ("clear", "Очистить историю диалога с Emilia"),
 )
@@ -41,6 +47,7 @@ def command_menu_text(kind: str) -> str:
             "/tickets — открытые обращения клиентов.\n"
             "/leads — последние лиды из CRM.\n"
             "/content — как быстро поставить задачу на пост, письмо или креатив.\n"
+            "/hypotheses — анализ гипотез, RICE, рисков и следующих действий.\n"
             "/calendar — показать неделю; /calendar встреча завтра в 10:00 — добавить; /calendar перенеси событие 1 на завтра 12:00 — исправить.\n"
             "/clear — очистить контекст диалога.\n\n"
             "Можно писать и обычным текстом или голосом: «добавь встречу завтра в 10:00», «удали событие 1»."
@@ -67,11 +74,17 @@ def command_menu_text(kind: str) -> str:
     return "Команды пока не настроены."
 
 
-async def set_application_commands(application, kind: str) -> None:
+async def set_application_commands(application, kind: str) -> bool:
     if kind == "orchestrator":
         commands = ORCHESTRATOR_COMMANDS
     elif kind == "secretary":
         commands = SECRETARY_COMMANDS
     else:
         commands = SUPPORT_COMMANDS
-    await application.bot.set_my_commands(to_bot_commands(commands))
+    try:
+        await application.bot.set_my_commands(to_bot_commands(commands))
+        return True
+    except Exception as exc:
+        # The command menu is helpful but must not prevent message polling from starting.
+        log.warning("Не удалось обновить меню Telegram-команд (%s): %s", kind, exc)
+        return False

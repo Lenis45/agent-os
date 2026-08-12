@@ -120,6 +120,19 @@ def _set_status(task_id, status, extra_sql="", params=(), event=None, detail=Non
         )
         if event:
             _event(cur, task_id, event, detail)
+        if status == "done":
+            cur.execute(
+                """
+                UPDATE projects p SET status='done', updated_at=now()
+                WHERE p.id=(SELECT project_id FROM tasks WHERE id=%s)
+                  AND p.status='active'
+                  AND EXISTS (SELECT 1 FROM tasks x WHERE x.project_id=p.id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM tasks x WHERE x.project_id=p.id AND x.status<>'done'
+                  )
+                """,
+                (task_id,),
+            )
         conn.commit()
     finally:
         conn.close()

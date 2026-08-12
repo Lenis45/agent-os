@@ -4,10 +4,10 @@
 
 ## Диагностика «всё ли живо»
 ```bash
-cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 infra_monitor.py   # полная проверка
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep ai_         # контейнеры
-launchctl list | grep -E "ai\.|amori\."                               # агенты
-cat ~/ai-infra/backups/local/status.json                              # статус бэкапа
+cd ~/ai-infra
+make doctor          # процессы, HTTP, Telegram, backup, disk
+make security-check  # права, bind-адреса, секреты, firewall
+make audit           # состояние агентов и качество последних ответов
 ```
 
 ## Алерт «контейнер не запущен»
@@ -34,13 +34,13 @@ until docker info >/dev/null 2>&1; do sleep 5; done   # ждать демон (�
 tail -40 ~/ai-infra/backups/backup.log             # что упало
 ls /Volumes/                                       # подключён ли внешний диск?
 diskutil mount /dev/disk4s1                         # примонтировать One Touch если нет
-cd ~/ai-infra/backups && ./backup.sh               # перезапустить вручную
+cd ~/ai-infra && make backup                        # перезапустить вручную
 ```
 
 ## Восстановление из бэкапа (DR)
 ```bash
 # 1. проверить, что бэкап восстановим (одноразовый контейнер, прод не трогает)
-cd ~/ai-infra/backups && ./restore_test.sh
+cd ~/ai-infra && make restore-test
 # 2. реальное восстановление БД в прод (ОСТОРОЖНО — перезапишет!)
 LATEST=$(ls -1dt ~/ai-infra/backups/local/20* | head -1)        # или с /Volumes/One Touch/amori-backups
 gunzip -c "$LATEST/pg_agents.sql.gz" | docker exec -i ai_postgres psql -U agent_user -d agents
@@ -68,9 +68,36 @@ cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 -c "import ops_store; ops_sto
 3. Перезапустить затронутых агентов (unload/load).
 
 ## Ollama / GPU-нода (denis-k) недоступна
-Не авария: `router.py` сам уводит ollama-задачи на Groq. Проверить ноду:
+Не авария: `router.py` сам уводит ollama-задачи на Groq. На Mac с включённым VPN
+используй Tailscale IPv6 endpoint, потому что IPv4 `100.77.9.84` может уходить не через
+Tailscale.
+
+Проверить ноду:
 ```bash
-curl -s http://100.77.9.84:11434/ >/dev/null && echo up || echo "denis-k down"
+python3 ~/ai-infra/scripts/check_remote_ollama.py
+curl -g -s 'http://[fd7a:115c:a1e0::b43b:954]:11434/api/tags'
+```
+
+Если API отвечает, но моделей нет, на Windows выполни:
+```powershell
+ollama pull qwen3.6:35b-a3b-q4_K_M
+ollama pull qwen3.6:27b-q4_K_M
+ollama pull gemma4:12b-it-qat
+ollama list
+```
+
+Если Windows только что перезагрузился:
+1. Tailscale должен быть online под тем же аккаунтом.
+2. Ollama должна стартовать после входа пользователя.
+3. `OLLAMA_HOST` на Windows должен быть `0.0.0.0:11434`.
+4. Firewall должен разрешать `11434` для Tailscale.
+
+Проверка на Windows:
+```powershell
+curl http://127.0.0.1:11434/api/tags
+curl http://100.77.9.84:11434/api/tags
+[Environment]::GetEnvironmentVariable("OLLAMA_HOST", "User")
+[Environment]::GetEnvironmentVariable("OLLAMA_HOST", "Machine")
 ```
 
 ## Проверка карты агентов в n8n

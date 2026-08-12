@@ -9,6 +9,7 @@
 #
 # Best-effort: падение компонента не валит прогон, но понижает итоговый статус.
 set -uo pipefail
+umask 077
 
 # launchd запускает с урезанным PATH (/usr/bin:/bin:/usr/sbin:/sbin) — без /usr/local/bin,
 # где лежит docker. Без этого все pg_dump падали ночью («docker: command not found»).
@@ -28,6 +29,7 @@ PY="${PY:-/opt/anaconda3/bin/python3}"
 STAMP="$(date +%Y-%m-%d_%H%M%S)"
 DEST="$DEST_ROOT/$STAMP"
 mkdir -p "$DEST"
+chmod 700 "$DEST_ROOT" "$DEST" 2>/dev/null || true
 status=0; offsite="none"; warnings=()
 log(){ echo "[backup $(date +%H:%M:%S)] $*"; }
 notify(){ "$PY" "$INFRA/agents/notify.py" "$1" --level "${2:-info}" >/dev/null 2>&1 || true; }
@@ -80,6 +82,52 @@ if tar -czf "$DEST/agents_code.tar.gz" -C "$INFRA" \
   log "  ✓ agents code+sessions → agents_code.tar.gz ($(du -h "$DEST/agents_code.tar.gz" | cut -f1))"
 else
   log "  ✗ agents tar FAILED"; status=1
+fi
+
+component_dirs=()
+[ -d "$INFRA/office-fork" ] && component_dirs+=(office-fork)
+[ -d "$INFRA/FreeQwenApi" ] && component_dirs+=(FreeQwenApi)
+[ -d "$INFRA/FreeGLMKimiAPI" ] && component_dirs+=(FreeGLMKimiAPI)
+if [ ${#component_dirs[@]} -gt 0 ]; then
+  if tar -czf "$DEST/components_code.tar.gz" -C "$INFRA" \
+        --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='*.log' \
+        --exclude='.DS_Store' --exclude='FreeQwenApi/.env' --exclude='FreeQwenApi/session' \
+        --exclude='FreeGLMKimiAPI/.env' --exclude='FreeGLMKimiAPI/auth.json' \
+        --exclude='office-fork/dashboard.config.json' --exclude='office-fork/data' \
+        "${component_dirs[@]}" 2>/dev/null \
+        && gzip -t "$DEST/components_code.tar.gz" 2>/dev/null; then
+    log "  ✓ optional services/office code → components_code.tar.gz ($(du -h "$DEST/components_code.tar.gz" | cut -f1))"
+  else
+    log "  ✗ optional services/office tar FAILED"; status=1
+  fi
+fi
+
+# Конфигурация запуска и локальные provider-сессии нужны для полного disaster recovery.
+runtime_items=(.env docker-compose.yml dashboard scripts)
+[ -f "$INFRA/FreeQwenApi/.env" ] && runtime_items+=(FreeQwenApi/.env)
+[ -d "$INFRA/FreeQwenApi/session" ] && runtime_items+=(FreeQwenApi/session)
+[ -f "$INFRA/FreeGLMKimiAPI/.env" ] && runtime_items+=(FreeGLMKimiAPI/.env)
+[ -f "$INFRA/FreeGLMKimiAPI/auth.json" ] && runtime_items+=(FreeGLMKimiAPI/auth.json)
+if tar -czf "$DEST/runtime_config.tar.gz" -C "$INFRA" \
+      --exclude='*.log' --exclude='node_modules' --exclude='dist' \
+      "${runtime_items[@]}" 2>/dev/null && gzip -t "$DEST/runtime_config.tar.gz" 2>/dev/null; then
+  log "  ✓ runtime config+provider sessions → runtime_config.tar.gz ($(du -h "$DEST/runtime_config.tar.gz" | cut -f1))"
+else
+  log "  ✗ runtime config tar FAILED"; status=1
+fi
+
+if ( cd "$HOME" && shopt -s nullglob && files=(
+       Library/LaunchAgents/ai.*.plist
+       Library/LaunchAgents/amori.*.plist
+       Library/LaunchAgents/chief.of.staff.plist
+       Library/LaunchAgents/email.watchdog.plist
+       Library/LaunchAgents/knowledge.curator.plist
+       Library/LaunchAgents/com.denis.*.plist
+     ) && [ ${#files[@]} -gt 0 ] && tar -czf "$DEST/launch_agents.tar.gz" "${files[@]}" ) \
+     && gzip -t "$DEST/launch_agents.tar.gz" 2>/dev/null; then
+  log "  ✓ launchd profiles → launch_agents.tar.gz ($(du -h "$DEST/launch_agents.tar.gz" | cut -f1))"
+else
+  log "  ✗ launchd profiles tar FAILED"; status=1
 fi
 
 # ── 4. Obsidian vault ──

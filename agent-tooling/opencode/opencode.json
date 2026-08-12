@@ -92,24 +92,66 @@
       "command": [
         "/Users/denis/ai-infra/mcp/run-fetch.sh"
       ],
-      "enabled": false
+      "enabled": true
     }
   },
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (local)",
+      "name": "Ollama (denis-k via Tailscale)",
       "options": {
-        "baseURL": "http://localhost:11434/v1"
+        "baseURL": "http://[fd7a:115c:a1e0::b43b:954]:11434/v1"
       },
       "models": {
-        "qwen3.5:9b-mlx": {
-          "name": "Qwen3.5 9B (код, MLX)"
+        "qwen3.6:35b-a3b-q4_K_M": {
+          "name": "Qwen3.6 35B A3B Q4_K_M (универсальный анализ)"
         },
-        "gemma4:12b-mlx": {
-          "name": "Gemma 4 12B (чат, MLX)"
+        "qwen3.6:27b-q4_K_M": {
+          "name": "Qwen3.6 27B Q4_K_M (код и сложные задачи)"
+        },
+        "gemma4:12b-it-qat": {
+          "name": "Gemma4 12B IT QAT (быстрый чат)"
         }
       }
+    },
+    "ollama-ipv4-fallback": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama IPv4 fallback (when Mac VPN route is fixed)",
+      "options": {
+        "baseURL": "http://100.77.9.84:11434/v1"
+      },
+      "models": {
+        "qwen3.6:35b-a3b-q4_K_M": {
+          "name": "Qwen3.6 35B A3B Q4_K_M (универсальный анализ)"
+        },
+        "qwen3.6:27b-q4_K_M": {
+          "name": "Qwen3.6 27B Q4_K_M (код и сложные задачи)"
+        },
+        "gemma4:12b-it-qat": {
+          "name": "Gemma4 12B IT QAT (быстрый чат)"
+        }
+      }
+    }
+  },
+  "skills": {
+    "paths": [
+      "/Users/denis/.agents/skills",
+      "/Users/denis/.config/opencode/skills",
+      "/Users/denis/.cache/opencode/packages/@dietrichgebert/ponytail@latest/node_modules/@dietrichgebert/ponytail/skills"
+    ]
+  },
+  "agent": {
+    "code-local": {
+      "description": "Local code work on denis-k Ollama through Tailscale IPv6",
+      "model": "ollama/qwen3.6:27b-q4_K_M"
+    },
+    "analysis-local": {
+      "description": "Private local analysis on denis-k Ollama through Tailscale IPv6",
+      "model": "ollama/qwen3.6:35b-a3b-q4_K_M"
+    },
+    "chat-local": {
+      "description": "Fast local chat on denis-k Ollama through Tailscale IPv6",
+      "model": "ollama/gemma4:12b-it-qat"
     }
   }
 }

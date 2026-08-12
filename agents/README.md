@@ -6,7 +6,7 @@ This folder contains long-running Telegram agents, scheduled automation,
 queue workers, shared safety contracts, database helpers, audit tools, and the
 test suite that protects the system from regressions.
 
-Verified: **2026-07-09** · tests: **90 passed**.
+Verified: **2026-08-12** · tests: **158 passed**.
 
 ---
 
@@ -80,11 +80,11 @@ ROUTING = {
     "email_watchdog":     "groq/openai/gpt-oss-120b",
     "knowledge_curator":  "groq/openai/gpt-oss-120b",
     "context_translator": "groq/openai/gpt-oss-120b",
-    "task_sync":          "ollama/gpt-oss:20b",
-    "research_agent":     "ollama/gpt-oss:20b",
-    "code_agent":         "ollama/qwen2.5-coder:7b",
-    "content_agent":      "ollama/gpt-oss:20b",
-    "analyst_agent":      "ollama/gpt-oss:20b",
+    "task_sync":          "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "research_agent":     "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "code_agent":         "ollama/qwen3.6:27b-q4_K_M",
+    "content_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "analyst_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
 }
 ```
 
@@ -92,6 +92,9 @@ Rules:
 
 - UI overrides live in `ops_db.agent_config` and are cached for 30 seconds.
 - If Ollama is unavailable, router returns `groq/openai/gpt-oss-120b`.
+- Text fallback is Gemini 3.6 Flash, then Groq GPT OSS 120B.
+- OpenModel is credit-gated through `OPENMODEL_ENABLED`; it is currently disabled after HTTP 402.
+- Qwen/GLM/Kimi browser proxies are optional and excluded until a real smoke-test passes.
 - Deprecated Groq `llama-3.3-70b-versatile` is normalized away.
 - Paid model usage is guarded by `cost_guard.py`.
 
@@ -127,6 +130,10 @@ Customer data does not belong in `ops_db` except derived operational metadata.
 | `email_agent` | `email_agent.py` | on-demand | Outbound emails to leads |
 | `infra_monitor` | `infra_monitor.py` | schedule | System health checks and alerting |
 | `provider_health` | `provider_health.py` | schedule/on-demand | LLM provider checks |
+
+### Hypothesis Hub bridge
+
+Emilia can analyse the live portfolio of product hypotheses through `/hypotheses` or a normal message mentioning RICE, prioritisation or experiments. The bridge in `hypothesis_hub.py` reads the Hub API only; it never writes hypotheses or changes statuses. Set `HYPOTHESIS_HUB_API_URL` and, for a production Hub, the matching `HYPOTHESIS_HUB_TOKEN` in `agents/.env`.
 
 ---
 
@@ -232,7 +239,7 @@ Coverage includes:
 
 | Issue | Impact | Fix |
 |---|---|---|
-| Google Calendar `invalid_grant` | Calendar sync cannot write events | Re-auth and refresh `agents/token.json` |
+| Google Calendar `invalid_grant` | Calendar sync cannot write events | Run `python3 scripts/reauthorize_calendar.py` and confirm access in Google |
 | One IMAP `AUTHENTICATIONFAILED` | One mailbox missing from digest | Generate new app password |
-| Historical June reports contain bad claims | Audit flags old data | Mark or archive old reports after review |
-| Telegram polling tracebacks | Log noise | Long-running services recover; improve log filtering/rotation later |
+| Historical reports before hardening | Kept for audit, hidden from current results | No action; the dashboard shows only trusted new reports |
+| Telegram VPN/TLS blips | A single probe can fail transiently | Polling recovers and monitoring retries before alerting |

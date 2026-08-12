@@ -28,10 +28,48 @@ import worker_handlers
 
 CHANNELS = {"telegram", "vk", "email", "landing", "ad"}
 KINDS = {"post", "email", "ad_creative", "landing"}
+VISUAL_REQUIRED_KINDS = {"post", "ad_creative", "landing"}
 
 
 def _conn():
     return ops_store.get_conn()
+
+
+def _artifact_errors(body, image_brief, kind="post"):
+    errors = []
+    if not str(body or "").strip():
+        errors.append("текст не создан")
+    if kind in VISUAL_REQUIRED_KINDS and not str(image_brief or "").strip():
+        errors.append("визуал не создан")
+    return errors
+
+
+def _store_generation_failure(channel, kind, brief, project_id, stage, body="", image_brief=""):
+    message = {
+        "copy": "Модель не вернула текст. Материал не отправлен на согласование.",
+        "visual": "Модель не вернула визуальный бриф. Материал не отправлен на согласование.",
+    }[stage]
+    cid = _insert(
+        channel,
+        kind,
+        brief,
+        body,
+        image_brief,
+        message,
+        project_id,
+        status="failed",
+        meta={"failed_stage": stage, "reason": message},
+    )
+    report_mod.report(
+        "content_factory",
+        kind="alert",
+        title=f"Контент не создан: {kind}/{channel} #{cid}",
+        summary=message,
+        project_id=project_id,
+        meta={"content_id": cid, "status": "failed", "failed_stage": stage},
+    )
+    print(f"[content_factory] #{cid} {kind}/{channel} -> failed ({stage})")
+    return cid
 
 
 def create(brief, channel="telegram", kind="post", project_id=None, review=True) -> int:
@@ -41,10 +79,17 @@ def create(brief, channel="telegram", kind="post", project_id=None, review=True)
     spec = f"Канал: {channel}. Формат: {kind}.\n\nБриф: {brief}"
 
     body = worker_handlers.content_writer({"title": f"{kind} для {channel}", "spec": spec})
+    if not str(body or "").strip():
+        return _store_generation_failure(channel, kind, brief, project_id, "copy")
+
     image_brief = worker_handlers.content_designer({
         "title": f"визуал для {kind}", "spec": spec,
         "deps_results": [{"id": 0, "title": "текст контента", "result": body}],
     })
+    if kind in VISUAL_REQUIRED_KINDS and not str(image_brief or "").strip():
+        return _store_generation_failure(
+            channel, kind, brief, project_id, "visual", body=body,
+        )
     rev = ""
     if review:
         rev = worker_handlers.content_reviewer({
@@ -55,7 +100,10 @@ def create(brief, channel="telegram", kind="post", project_id=None, review=True)
             ],
         })
 
-    cid = _insert(channel, kind, brief, body, image_brief, rev, project_id)
+    cid = _insert(
+        channel, kind, brief, body, image_brief, rev, project_id,
+        status="pending", meta={"artifacts_validated": True},
+    )
     _notify_preview(cid, channel, kind, body, image_brief)
     report_mod.report(
         "content_factory", kind="content",
@@ -67,15 +115,16 @@ def create(brief, channel="telegram", kind="post", project_id=None, review=True)
     return cid
 
 
-def _insert(channel, kind, brief, body, image_brief, rev, project_id):
+def _insert(channel, kind, brief, body, image_brief, rev, project_id, *, status="pending", meta=None):
     conn = _conn()
     try:
         cur = conn.cursor()
         title = (body or "").strip().split("\n")[0][:120]
         cur.execute(
             "INSERT INTO content_items(project_id, channel, kind, brief, title, body, "
-            "image_brief, review, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending') RETURNING id",
-            (project_id, channel, kind, brief, title, body, image_brief, rev),
+            "image_brief, review, status, meta) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (project_id, channel, kind, brief, title, body, image_brief, rev, status,
+             json.dumps(meta or {})),
         )
         cid = cur.fetchone()[0]
         conn.commit()
@@ -125,6 +174,13 @@ def approve(cid):
     item = get(cid)
     if not item:
         return {"ok": False, "error": "not found"}
+    errors = _artifact_errors(item.get("body"), item.get("image_brief"), item.get("kind"))
+    if errors:
+        return {
+            "ok": False,
+            "error": "content_incomplete",
+            "message": "Нельзя согласовать: " + ", ".join(errors) + ".",
+        }
     _set_status(cid, "approved", "approved_at")
     return {"ok": True, "published": publish(cid)}
 
@@ -142,6 +198,13 @@ def publish(cid):
     item = get(cid)
     if not item:
         return {"ok": False, "error": "not found"}
+    errors = _artifact_errors(item.get("body"), item.get("image_brief"), item.get("kind"))
+    if errors:
+        return {
+            "ok": False,
+            "error": "content_incomplete",
+            "message": "Нельзя опубликовать: " + ", ".join(errors) + ".",
+        }
     result, info = _do_publish(item["channel"], item)
     if result == "sent":
         _set_status(cid, "published", "published_at")   # реально отправлено во внешний канал

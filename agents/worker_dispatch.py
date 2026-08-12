@@ -43,7 +43,7 @@ def main():
     ops_store.wait_ready()  # на буте Postgres поднимается позже агента
     ops_store.init()
     keys = worker_handlers.register_all()
-    print(f"[dispatch] worker dispatcher запущен; спецхендлеры: {', '.join(keys)}")
+    print(f"[dispatch] worker dispatcher запущен; спецхендлеры: {', '.join(keys)}", flush=True)
     idle = 0
     while True:
         try:

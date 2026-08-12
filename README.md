@@ -10,11 +10,11 @@ CRM, support, knowledge management, monitoring, and backups.
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Groq](https://img.shields.io/badge/Groq-GPT_OSS_120B-F55036)
-![DeepSeek](https://img.shields.io/badge/DeepSeek-V4_Flash-4B6BFB)
+![LLM failover](https://img.shields.io/badge/LLM-Gemini_3.6_%7C_Groq-1A73E8)
 ![Qdrant](https://img.shields.io/badge/Qdrant-vector_memory-DC244C)
 ![Telegram](https://img.shields.io/badge/Telegram-operator_UI-26A5E4?logo=telegram&logoColor=white)
 ![launchd](https://img.shields.io/badge/launchd-macOS-999999?logo=apple&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-90_passed-2EA043)
+![Tests](https://img.shields.io/badge/tests-158_passed-2EA043)
 
 </div>
 
@@ -38,7 +38,8 @@ actions such as publishing or outbound communication.
 
 ## Current State Snapshot
 
-Last verified: **2026-07-09** on the local Mac host.
+Last verified: **2026-08-12** on the local Mac host. See the factual
+[system baseline](docs/SYSTEM_BASELINE_2026-08-12.md).
 
 | Area | Current fact |
 |---|---|
@@ -46,21 +47,25 @@ Last verified: **2026-07-09** on the local Mac host.
 | Containers | 5/5 up: Postgres, Qdrant, Redis, Langfuse, n8n |
 | Dashboard | `http://localhost:8099` |
 | Pixel office | `http://localhost:5070` |
-| Agent dashboard status | 8/9 running/scheduled/on-demand in the control panel |
-| Queue | No active queued tasks at last check |
-| Tests | `90 passed` in `agents/tests` |
+| Agent dashboard status | 8/8 required agents available + 1 on-demand agent |
+| Queue | No active queued or failed tasks at last check |
+| Tests | `158 passed` in `agents/tests` |
 | Default Groq model | `groq/openai/gpt-oss-120b` |
+| Production LLM chain | Gemini 3.6 Flash -> Groq GPT OSS 120B |
 | Paid API budget | 2500 RUB cap, current paid spend shown as 0.00 RUB |
-| Restore test | Passing; latest backup restored into a disposable Postgres container |
+| Security boundary | Core Docker loopback-only; remote dashboard API requires bearer auth |
+| Restore test | Passing weekly; latest backup restored into a disposable Postgres container |
 
 Known operator items are documented instead of hidden:
 
 | Item | Why it matters | Current handling |
 |---|---|---|
-| Google Calendar token | `calendar_agent` cannot modify Calendar with expired OAuth | Agent now fails closed and sends a warning instead of crashing |
-| One IMAP account | `email_watchdog` sees `AUTHENTICATIONFAILED` for one mailbox | Other mailboxes still work; update the app password |
+| Google Calendar token | `calendar_agent` cannot modify Calendar with expired OAuth | Agent fails closed; owner re-authorization is still required |
+| DeepSeek/OpenModel credit | Provider returns HTTP 402 | Disabled explicitly; Gemini/Groq handle production traffic |
+| Optional web proxies | Qwen/GLM/Kimi processes could be up while real generation failed | Autostart disabled until re-auth plus successful smoke-test |
 | Historical bad reports | Old June reports contain fake publication/product claims | New output contracts and tests block these patterns going forward |
-| Telegram network noise | Telegram polling can emit transient SSL/EOF stack traces | Long-running bots recover under launchd / library retry loops |
+| Telegram network noise | VPN/TLS can produce isolated handshake/EOF timeouts | Alert requires three consecutive transient failures; bots recover automatically |
+| Disk headroom | About 22 GiB remains after safe Docker image cleanup | Doctor warns below 15 GiB; keep at least 15-20 GiB free |
 
 ---
 
@@ -124,7 +129,8 @@ flowchart TB
 
     subgraph External["External systems"]
         Groq["Groq<br/>GPT OSS 120B"]
-        OpenModel["OpenModel<br/>DeepSeek V4 Flash"]
+        OpenModel["OpenModel<br/>optional / credit-gated"]
+        Gemini["Gemini<br/>3.6 Flash fallback"]
         Ollama["Ollama GPU node<br/>optional/local"]
         Telegram["Telegram API"]
         Google["Google Calendar"]
@@ -154,8 +160,10 @@ flowchart TB
     Scheduled --> Obsidian
 
     Orchestrator --> Groq
-    Orchestrator --> OpenModel
+    Orchestrator -. disabled until funded .-> OpenModel
+    Orchestrator --> Gemini
     Agents --> Groq
+    Agents --> Gemini
     Agents --> Ollama
     Customer --> Telegram
     Scheduled --> Google
@@ -342,10 +350,11 @@ cd ~/ai-infra/agents
 
 | Interface | URL / command | Purpose |
 |---|---|---|
-| Dashboard | `http://localhost:8099` | Main control panel: projects, content, reports, system, agents, budget |
+| Dashboard | `http://localhost:8099` | Founder action center: decisions, projects, results, system health |
 | Dashboard docs | `http://localhost:8099/docs` | Rendered `docs/HOW_IT_WORKS.md` |
-| Ambient office | `http://localhost:8099/office` | Lightweight operational overview |
-| Pixel office | `http://localhost:5070` | Visual agent office |
+| Pixel office alias | `http://localhost:8099/office` | Redirects to the canonical visual office |
+| Pixel office | `http://localhost:5070` | Visual agent office; not the source of operational truth |
+| SMM Factory | `http://localhost:8180` | Primary workspace for copy, images, approval, scheduling, and publishing |
 | Telegram | private bots | Founder command surface and support |
 | MCP | `mcp/` | Read-only analytics/tools for Codex, Claude, Hermes |
 
@@ -384,13 +393,14 @@ python -m pytest tests/ -q
 ## Operations
 
 ```bash
-# Health
-cd ~/ai-infra/agents
-/opt/anaconda3/bin/python3 infra_monitor.py
-/opt/anaconda3/bin/python3 audit_agents.py
+cd ~/ai-infra
 
-# Tests
-/opt/anaconda3/bin/python3 -m pytest tests -q
+# One-command operational checks
+make doctor
+make security-check
+make test
+make audit
+make release-check
 
 # Dashboard state
 curl -s http://localhost:8099/api/state
@@ -402,8 +412,9 @@ launchctl kickstart -k gui/$(id -u)/ai.dashboard
 launchctl kickstart -k gui/$(id -u)/knowledge.curator
 launchctl kickstart -k gui/$(id -u)/amori.support
 
-# Restore-test without touching production
-cd ~/ai-infra/backups && ./restore_test.sh
+# Backup and restore-test without touching production
+make backup
+make restore-test
 ```
 
 Launchd labels:
@@ -432,7 +443,8 @@ Cron:
 ├── mcp/                 MCP tools for external coding assistants
 ├── docs/                HOW_IT_WORKS, RUNBOOK, INFRA, principles
 ├── backups/             Local/off-site backup scripts and restore tests
-├── office-fork/         Pixel office visualization
+├── office-fork/         Private Pixel Office submodule
+├── FreeQwenApi/         Private optional Qwen proxy submodule (disabled by default)
 ├── docker-compose.yml   Postgres, Qdrant, Redis, Langfuse, n8n
 └── AGENTS.md            Coding-agent rules for this repository
 ```
@@ -440,9 +452,14 @@ Cron:
 Important docs:
 
 - [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) — Russian operator guide.
+- [docs/SYSTEM_BASELINE_2026-08-12.md](docs/SYSTEM_BASELINE_2026-08-12.md) — verified system inventory, boundaries, and open items.
 - [docs/RUNBOOK.md](docs/RUNBOOK.md) — incident procedures.
 - [docs/INFRA.md](docs/INFRA.md) — infrastructure inventory.
 - [agents/README.md](agents/README.md) — agent runtime internals.
+
+The public repository works without private submodules. Their source is kept in
+private owner repositories because the customized office is part of the commercial
+operating environment; production agents do not depend on either submodule.
 
 ---
 
@@ -450,10 +467,10 @@ Important docs:
 
 | Priority | Improvement | Reason |
 |---|---|---|
-| P0 | Refresh Google Calendar OAuth token | Restores calendar automation |
-| P0 | Replace invalid IMAP app password | Restores full email coverage |
-| P1 | Clean/annotate historical bad reports | Prevents old reports from polluting audits |
-| P1 | Add log rotation for large Telegram traceback logs | Keeps audit signal cleaner |
+| P0 | Refresh Google Calendar OAuth token | Restores external calendar writes |
+| P0 | Keep at least 15-20 GiB free on the Data volume | Prevents local services and backups from failing |
+| P1 | Isolate production Python dependencies in a locked venv | Removes global conda package conflicts |
+| P1 | Restrict or stop the separate `amori-local-*` mobile dev stack when idle | Removes 14 LAN-visible development ports |
 | P1 | Add real image generation provider or ComfyUI bridge | Turns visual briefs into assets |
 | P2 | Add search API for `web_researcher` | Makes research current instead of model-memory based |
 | P2 | Add PR/code-apply tool for `dev_worker` | Moves dev worker from proposal mode to supervised execution |

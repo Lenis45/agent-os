@@ -1,10 +1,14 @@
 """Юнит-тесты общих библиотек инфры (v3.0). Чистые функции + безопасные round-trip в ops_db."""
 import pytest
+import requests
 import llm
 import cost_guard
 import retry
 import ops_store
 import db
+import provider_health
+import router
+import praisonaiagents
 
 
 # ── llm.parse_json ────────────────────────────────────────────────
@@ -67,10 +71,199 @@ def test_deprecated_groq_model_is_normalized():
     assert llm.normalize_groq_model("llama-3.3-70b-versatile") == "openai/gpt-oss-120b"
     assert llm.normalize_groq_model("groq/llama-3.3-70b-versatile", litellm=True) == "groq/openai/gpt-oss-120b"
 
+
+def test_run_falls_back_from_empty_groq_to_configured_provider(monkeypatch):
+    used = []
+
+    class PrimaryAgent:
+        def start(self, _prompt):
+            return ""
+
+    class FallbackAgent:
+        def __init__(self, model, **_kwargs):
+            used.append(model)
+
+        def start(self, _prompt):
+            return "ответ через Gemini"
+
+    primary = PrimaryAgent()
+    llm._AGENT_BUILD[id(primary)] = ("groq/openai/gpt-oss-120b", {"name": "test"})
+    monkeypatch.setattr(llm, "fallback_models", lambda _primary=None: ["gemini/gemini-3.6-flash"])
+    monkeypatch.setattr(praisonaiagents, "Agent", FallbackAgent)
+    monkeypatch.setattr(llm, "_record", lambda *args, **kwargs: None)
+
+    result = llm.run(primary, "проверка", "orchestrator", attempts=1)
+
+    assert result == "ответ через Gemini"
+    assert used == ["gemini/gemini-3.6-flash"]
+
+
+def test_groq_chat_returns_compatible_response_from_fallback(monkeypatch):
+    class Completions:
+        @staticmethod
+        def create(**_kwargs):
+            raise TimeoutError("Groq unavailable")
+
+    class Client:
+        class Chat:
+            completions = Completions()
+
+        chat = Chat()
+
+    monkeypatch.setattr(
+        llm,
+        "_fallback_text",
+        lambda *_args, **_kwargs: ("{\"tool\":\"answer\"}", "gemini/gemini-3.6-flash"),
+        raising=False,
+    )
+
+    response = llm.groq_chat(Client(), "orchestrator", [{"role": "user", "content": "route"}])
+
+    assert response.choices[0].message.content == '{"tool":"answer"}'
+
+
+def test_fallback_text_supplies_default_agent_instructions(monkeypatch):
+    created = []
+
+    class FallbackAgent:
+        def __init__(self, model, **kwargs):
+            created.append((model, kwargs))
+            if not any(kwargs.get(key) for key in ("name", "role", "goal", "backstory", "instructions")):
+                raise ValueError("agent identity is required")
+
+        def start(self, _prompt):
+            return "готово"
+
+    monkeypatch.setattr(llm, "fallback_models", lambda _primary=None: ["gemini/gemini-3.6-flash"])
+    monkeypatch.setattr(praisonaiagents, "Agent", FallbackAgent)
+
+    text, model = llm._fallback_text("проверка", "orchestrator", primary_model="groq/test")
+
+    assert text == "готово"
+    assert model == "gemini/gemini-3.6-flash"
+    assert created[0][1]["instructions"]
+
+
+def test_vision_skips_disabled_qwen_proxy(monkeypatch, tmp_path):
+    image = tmp_path / "pixel.png"
+    image.write_bytes(b"not-a-real-image")
+    monkeypatch.setattr(llm, "FREEQWEN_ENABLED", False)
+    monkeypatch.setattr(llm, "_freeqwen_chat", lambda *_args, **_kwargs: pytest.fail("Qwen must stay disabled"))
+    monkeypatch.setattr(llm, "_groq_vision_analyze", lambda *_args, **_kwargs: "image understood")
+    monkeypatch.setattr(llm, "_record", lambda *args, **kwargs: None)
+
+    assert llm.vision_analyze("describe", str(image)) == "image understood"
+
+
+def test_openmodel_does_not_retry_permanent_payment_error(monkeypatch):
+    response = requests.Response()
+    response.status_code = 402
+    response.url = "https://api.openmodel.ai/v1/messages"
+    calls = []
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(True)
+        return response
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError):
+        llm._openmodel_chat("ping", timeout=1)
+
+    assert len(calls) == 1
+
 def test_unsupported_amori_claims_detected():
     claims = llm.unsupported_product_claims("Ошейник показывает местоположение в реальном времени и мониторит здоровье.")
     assert "real-time location" in claims
     assert "health/activity monitoring" in claims
+
+
+def test_router_checks_ollama_tags_endpoint(monkeypatch):
+    calls = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"models":[{"name":"qwen3.6:35b-a3b-q4_K_M"}]}'
+
+    def fake_urlopen(url, timeout):
+        calls["url"] = url
+        calls["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
+    monkeypatch.setenv("OLLAMA_CHECK_TIMEOUT", "1.25")
+    monkeypatch.setattr(router.urllib.request, "urlopen", fake_urlopen)
+    router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
+
+    assert router._check_ollama() is True
+    assert calls["url"] == "http://example.local:11434/api/tags"
+    assert calls["timeout"] == 1.25
+
+
+def test_router_requires_selected_ollama_model(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"models":[]}'
+
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
+    monkeypatch.setattr(router.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr(router, "_model_overrides", lambda: {})
+    router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
+
+    assert router._check_ollama(required_model="qwen3.6:35b-a3b-q4_K_M") is False
+    assert router.get_model("task_sync") == router.DEFAULT_GROQ_LITELLM_MODEL
+
+
+def test_provider_health_reports_ollama_port_timeout(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_BASE", "http://100.77.9.84:11434")
+    monkeypatch.setattr(provider_health, "_tcp_probe", lambda *_args, **_kwargs: (False, "timeout"))
+
+    icon, status, fix = provider_health.check_ollama()
+
+    assert icon == "⚪"
+    assert "порт недоступен" in status
+    assert "ollama serve" in fix
+
+
+def test_provider_health_reports_missing_ollama_models(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"models": []}
+
+    monkeypatch.setenv("OLLAMA_REQUIRED_MODELS", "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b-q4_K_M")
+    monkeypatch.setattr(provider_health, "_tcp_probe", lambda *_args, **_kwargs: (True, "tcp ok"))
+    monkeypatch.setattr(provider_health, "_get", lambda *_args, **_kwargs: FakeResponse())
+
+    icon, status, fix = provider_health.check_ollama()
+
+    assert icon == "⚠️"
+    assert "нет моделей" in status
+    assert "ollama pull qwen3.6:35b-a3b-q4_K_M" in fix
+
+
+def test_provider_health_accepts_gemini_as_working_brain():
+    ok, summary = provider_health.brain_summary(
+        ("🔴", "HTTP 402", "top up"),
+        ("🔴", "timeout", "check network"),
+        ("🟢", "ok (gemini-3.6-flash)", ""),
+    )
+
+    assert ok is True
+    assert "Gemini" in summary
+    assert "лежит" not in summary
 
 
 # ── retry ─────────────────────────────────────────────────────────

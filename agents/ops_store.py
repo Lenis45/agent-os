@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS content_items (
     body         TEXT,
     image_brief  TEXT,
     review       TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending',    -- draft|pending|approved|ready|rejected|published
+    status       TEXT NOT NULL DEFAULT 'pending',    -- draft|pending|approved|ready|rejected|published|failed
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     approved_at  TIMESTAMPTZ,

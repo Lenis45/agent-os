@@ -16,6 +16,8 @@ import agent_contracts
 import notify
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
+from telegram_format import normalize_plain_text
+from telegram_runtime import install_error_handler
 
 load_dotenv()
 init_db()
@@ -256,31 +258,10 @@ def send_to_customer(customer_id: str, text: str):
 
 def normalize_telegram_answer(text: str, max_chars: int = MAX_TELEGRAM_ANSWER_CHARS) -> str:
     """Clean LLM output for a natural Telegram chat reply."""
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)
-    s = re.sub(r"__(.*?)__", r"\1", s, flags=re.S)
-    s = re.sub(r"`([^`]*)`", r"\1", s)
-    cleaned = []
-    for line in s.splitlines():
-        line = line.strip()
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^[*_]{1,3}\s*", "", line)
-        line = re.sub(r"\s{2,}", " ", line)
-        if line:
-            cleaned.append(line)
-    s = "\n".join(cleaned)
-    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+    s = normalize_plain_text(text, max_chars=max_chars)
     if not s:
         return "Передам вопрос команде Amori, чтобы вам ответили точнее."
-    if len(s) <= max_chars:
-        return s
-    cut = s[:max_chars].rstrip()
-    sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
-    if sentence_end >= max_chars * 0.55:
-        cut = cut[:sentence_end + 1]
-    else:
-        cut = cut.rstrip(" ,;:") + "…"
-    return cut
+    return s
 
 
 def ai_respond(message: str, history: list) -> dict:
@@ -473,6 +454,7 @@ def main():
     app.add_handler(CommandHandler("contact", cmd_contact))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_customer_message))
+    install_error_handler(app, log, "support_agent")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from memory import remember, recall, is_known, init_db
 
 import notify
 import llm
+import ops_store
 from applog import get_logger
 
 load_dotenv()
@@ -35,6 +36,15 @@ tg = TelegramClient(
     int(os.getenv("TELEGRAM_API_ID")),
     os.getenv("TELEGRAM_API_HASH")
 )
+
+
+def calendar_error_guidance(error) -> str:
+    text = str(error or "").lower()
+    if any(marker in text for marker in ("invalid_grant", "expired", "revoked", "token.json не найден")):
+        return "Нужна повторная авторизация Google Calendar и новый token.json."
+    if any(marker in text for marker in ("ssl", "eof", "timeout", "timed out", "connection", "network")):
+        return "Проверь VPN/сеть до oauth2.googleapis.com и www.googleapis.com; повторная авторизация не нужна."
+    return "Проверь доступ к Google Calendar; повторную авторизацию делай только при ошибке OAuth-токена."
 
 def get_calendar_service():
     if not os.path.exists(TOKEN_FILE):
@@ -308,7 +318,7 @@ def create_manual_event_from_text(text: str, source: str = "emilia") -> dict:
             "ok": False,
             "message": (
                 "Не смог подключиться к Google Calendar, событие не добавлено. "
-                f"Причина: {str(e)[:220]}. Нужно обновить token.json."
+                f"Причина: {str(e)[:220]}. {calendar_error_guidance(e)}"
             ),
         }
     if _looks_duplicate(existing, title, start_dt):
@@ -323,7 +333,7 @@ def create_manual_event_from_text(text: str, source: str = "emilia") -> dict:
             "ok": False,
             "message": (
                 "Не смог записать событие в Google Calendar. "
-                f"Причина: {str(e)[:220]}. Проверь Google Calendar OAuth token."
+                f"Причина: {str(e)[:220]}. {calendar_error_guidance(e)}"
             ),
         }
     remember(
@@ -392,7 +402,7 @@ def plan_calendar_change_from_text(text: str) -> dict:
     except Exception as e:
         return {
             "ok": False,
-            "message": f"Не смог подключиться к Google Calendar: {str(e)[:220]}. Нужно обновить token.json.",
+            "message": f"Не смог подключиться к Google Calendar: {str(e)[:220]}. {calendar_error_guidance(e)}",
         }
 
     data = parse_calendar_change_request(text, events)
@@ -585,10 +595,17 @@ async def run():
         upcoming = get_upcoming_events(days=7)
     except Exception as e:
         log.error(f"Calendar unavailable: {e}")
+        try:
+            ops_store.heartbeat("calendar_agent", "warn", {
+                "message": "Google Calendar недоступен. " + calendar_error_guidance(e),
+                "error": str(e)[:200],
+            })
+        except Exception:
+            pass
         notify.send(
             f"📅 Calendar Agent | {now_str}\n"
             f"Не смог подключиться к Google Calendar: {str(e)[:300]}\n"
-            "Автоматическое добавление/удаление событий пропущено. Нужно обновить Google token.json.",
+            "Автоматическое добавление/удаление событий пропущено. " + calendar_error_guidance(e),
             "warn",
         )
         return
@@ -677,6 +694,12 @@ EMAIL (последние 3 дня):
     result = await asyncio.to_thread(lambda: llm.run(agent, prompt, "calendar_agent"))
     data = llm.parse_json(result)
     if not isinstance(data, dict):
+        try:
+            ops_store.heartbeat("calendar_agent", "warn", {
+                "message": "LLM не вернул корректный план календаря",
+            })
+        except Exception:
+            pass
         notify.send(f"📅 Calendar Agent {now_str}\nОшибка парсинга ответа.")
         return
 
@@ -755,6 +778,14 @@ EMAIL (последние 3 дня):
     report += format_week_digest(upcoming, days=7, now=now) + "\n"
 
     notify.send(report)
+    try:
+        ops_store.heartbeat("calendar_agent", "ok", {
+            "message": "Недельный календарь проверен",
+            "events": len(upcoming),
+            "added": len(added),
+        })
+    except Exception:
+        pass
     log.info("Отчёт отправлен")
 
 if __name__ == "__main__":

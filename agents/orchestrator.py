@@ -18,6 +18,8 @@ import db
 import llm
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
+from telegram_format import normalize_plain_text
+from telegram_runtime import install_error_handler
 
 load_dotenv()
 init_db()
@@ -31,28 +33,10 @@ MAX_TELEGRAM_REPLY_CHARS = 3500
 
 def normalize_telegram_reply(text: str, max_chars: int = MAX_TELEGRAM_REPLY_CHARS) -> str:
     """Clean model output for a natural Telegram reply."""
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)
-    s = re.sub(r"__(.*?)__", r"\1", s, flags=re.S)
-    s = re.sub(r"`([^`]*)`", r"\1", s)
-    lines = []
-    for line in s.splitlines():
-        line = line.strip()
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^[*_]{1,3}\s*", "", line)
-        line = re.sub(r"\s{2,}", " ", line)
-        if line:
-            lines.append(line)
-    s = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    s = normalize_plain_text(text, max_chars=max_chars)
     if not s:
         return "Не получил содержательный ответ. Попробуй переформулировать."
-    if len(s) <= max_chars:
-        return s
-    cut = s[:max_chars].rstrip()
-    sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
-    if sentence_end >= max_chars * 0.6:
-        return cut[:sentence_end + 1]
-    return cut.rstrip(" ,;:") + "…"
+    return s
 
 def save_message(user_id: str, role: str, content: str, tool: str = None):
     conn = get_db()
@@ -314,6 +298,15 @@ def tool_direct_answer(question: str, history: list) -> str:
     return str(llm.qwen_answer(prompt, system=system, agent_key="orchestrator"))
 
 
+def tool_hypotheses(question: str = "") -> str:
+    """Read-only live analysis of Hypothesis Hub through Amori's configured LLM."""
+    try:
+        from hypothesis_hub import analyze as analyze_hypotheses
+        return analyze_hypotheses(question)
+    except RuntimeError as error:
+        return f"⚠️ Не смог получить данные Hypothesis Hub: {error}"
+
+
 def extract_text_from_file(path: str, max_chars: int = 12000) -> str:
     """Извлечь текст из документа (pdf/docx/xlsx/txt/код). None — формат не поддержан."""
     ext = os.path.splitext(path)[1].lower()
@@ -425,6 +418,7 @@ TOOLS_DESCRIPTION = """
 - get_leads: показать список лидов (params: status[optional])
 - new_project: запустить проект для AI-команды — декомпозирует цель на задачи и раздаёт работникам (params: goal с описанием цели проекта)
 - make_content: контент-завод для продаж — сгенерировать пост/письмо/креатив/лендинг и положить на аппрув (params: brief с описанием нужного контента)
+- hypotheses: получить live-снимок Hypothesis Hub и проанализировать RICE, риски и следующие действия (params: question[optional])
 """
 
 # Подтверждение требуется ТОЛЬКО для исходящих/необратимых действий (отправка писем,
@@ -438,6 +432,11 @@ def _is_calendar_add_request(message: str) -> bool:
     add_words = ("добав", "постав", "заплан", "создай", "внеси", "занеси")
     calendar_words = ("календар", "встреч", "созвон", "мероприят", "событ", "чай", "звонок")
     return any(w in text for w in add_words) and any(w in text for w in calendar_words)
+
+
+def _is_hypotheses_request(message: str) -> bool:
+    text = (message or "").lower()
+    return any(word in text for word in ("гипотез", "rice", "райс", "приоритизац", "эксперимент"))
 
 def _is_calendar_change_request(message: str) -> bool:
     text = (message or "").lower()
@@ -454,6 +453,8 @@ def _is_calendar_list_request(message: str) -> bool:
 
 def orchestrate(message: str, history: list) -> dict:
     """Определяем намерение и инструмент"""
+    if _is_hypotheses_request(message):
+        return {"tool": "hypotheses", "params": {"question": message}, "confirmation_text": ""}
     if _is_calendar_change_request(message):
         return {
             "tool": "change_calendar_event",
@@ -487,6 +488,7 @@ def orchestrate(message: str, history: list) -> dict:
 
 Подсказки по выбору:
 - «проверь агентов/ботов», «всё работает?», «статус системы» → check_agents
+- «гипотезы», «RICE», «приоритизация», «какой эксперимент следующий?» → hypotheses
 - «добавь встречу/событие/мероприятие в календарь ...» → add_calendar_event (params: {{"text": полное сообщение}})
 - «что в календаре на неделю», «покажи мероприятия» → calendar_week
 - «перенеси/измени/переименуй/удали событие ...» → change_calendar_event (params: {{"text": полное сообщение}})
@@ -596,6 +598,8 @@ def execute_tool(tool: str, params: dict, history: list) -> str:
         return tool_new_project(params.get("goal", ""))
     elif tool == "make_content":
         return tool_make_content(params.get("brief", ""))
+    elif tool == "hypotheses":
+        return tool_hypotheses(params.get("question", ""))
     elif tool == "answer":
         return tool_direct_answer(params.get("question", ""), history)
     return "Не знаю как выполнить это действие."
@@ -646,6 +650,15 @@ async def handle_content_command(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
     result = tool_make_content(brief)
+    await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
+
+
+async def handle_hypotheses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.from_user.id) != os.getenv("TELEGRAM_MY_ID"):
+        return
+    await update.message.reply_text("📊 Анализирую гипотезы и последние результаты...")
+    question = " ".join(context.args or []).strip()
+    result = await asyncio.get_event_loop().run_in_executor(_executor, lambda: tool_hypotheses(question))
     await update.message.reply_text(normalize_telegram_reply(result, max_chars=3500))
 
 async def handle_calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1022,7 +1035,9 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
-    log.info("AI Orchestrator запущен (мозг: OpenModel/DeepSeek V4 Flash, fallback Groq; vision qwen3-vl-plus)")
+    text_chain = "OpenModel → Gemini → Groq" if llm.OPENMODEL_ENABLED else "Gemini → Groq"
+    vision_chain = "Qwen → Groq → Gemini" if llm.FREEQWEN_ENABLED else "Groq → Gemini"
+    log.info("AI Orchestrator запущен (LLM: %s; vision: %s)", text_chain, vision_chain)
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
     app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()
     app.add_handler(CommandHandler("start", handle_start))
@@ -1030,6 +1045,7 @@ def main():
     app.add_handler(CommandHandler("agents", handle_agents))
     app.add_handler(CommandHandler("leads", handle_leads))
     app.add_handler(CommandHandler("content", handle_content_command))
+    app.add_handler(CommandHandler("hypotheses", handle_hypotheses_command))
     app.add_handler(CommandHandler("calendar", handle_calendar_command))
     app.add_handler(CommandHandler("clear", handle_clear))
     app.add_handler(CommandHandler("reply", handle_reply))
@@ -1038,6 +1054,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    install_error_handler(app, log, "orchestrator")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
