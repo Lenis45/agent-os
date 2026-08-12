@@ -16,6 +16,7 @@ agents/*.session
 agents/*.log
 agents/*.log.*.gz
 agents/worker.log
+agents/runtime/
 backups/backup.log
 backups/backup-osascript.log
 *.log
