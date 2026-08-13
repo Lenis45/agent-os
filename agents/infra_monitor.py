@@ -426,8 +426,13 @@ def run_digest():
             spent = cost_guard.month_spend_rub(paid_only=True)
             remain = cost_guard.remaining_paid_rub()
             t1 = tier1_log.stats(7)
+            usage = cost_guard.usage_summary(7)
             lines.append(f"💸 Платный API за месяц: {spent:.0f}₽ (осталось {remain:.0f}₽)")
             lines.append(f"🧠 Tier-1 сессий за 7д: {t1['total']} (applied {t1['applied']})")
+            token_count = f"{usage['total_tokens']:,}".replace(",", " ")
+            lines.append(
+                f"⚙️ LLM за 7д: {usage['calls']} выз., {token_count} токенов"
+            )
         except Exception:
             pass
     try:

@@ -16,6 +16,11 @@ except Exception as _e:  # pragma: no cover
 # любая ошибка чтения → используем дефолтный ROUTING (роутинг не должен падать).
 _override = {"models": {}, "ts": 0.0}
 _ollama_cache = {"models": set(), "ok": False, "ts": 0.0, "error": ""}
+DEPRECATED_MODEL_REPLACEMENTS = {
+    "groq/llama-3.3-70b-versatile": "groq/openai/gpt-oss-120b",
+    "groq/qwen/qwen3-32b": "groq/openai/gpt-oss-120b",
+    "groq/meta-llama/llama-4-scout-17b-16e-instruct": "groq/qwen/qwen3.6-27b",
+}
 
 def _model_overrides() -> dict:
     now = time.time()
@@ -50,8 +55,7 @@ ROUTING = {
 def get_model(agent_name: str) -> str:
     # Override из UI (agent_config) имеет приоритет над дефолтом ROUTING
     model = _model_overrides().get(agent_name) or ROUTING.get(agent_name, DEFAULT_GROQ_LITELLM_MODEL)
-    if model == "groq/llama-3.3-70b-versatile":
-        model = DEFAULT_GROQ_LITELLM_MODEL
+    model = DEPRECATED_MODEL_REPLACEMENTS.get(model, model)
 
     # Если системник недоступен — fallback на Groq
     if model.startswith("ollama"):

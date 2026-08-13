@@ -3,7 +3,8 @@
 # Запускается еженедельно (launchd ai.tests) и вручную перед/после правок агентов.
 set -uo pipefail
 AGENTS="${INFRA_DIR:-$HOME/ai-infra}/agents"
-PY="${PY:-/opt/anaconda3/bin/python3}"
+PY="${PY:-$HOME/ai-infra/.venv/bin/python}"
+[ -x "$PY" ] || PY="/opt/anaconda3/bin/python3"
 cd "$AGENTS"
 
 out="$("$PY" -m pytest tests/ -q 2>&1)"

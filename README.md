@@ -14,7 +14,7 @@ CRM, support, knowledge management, monitoring, and backups.
 ![Qdrant](https://img.shields.io/badge/Qdrant-vector_memory-DC244C)
 ![Telegram](https://img.shields.io/badge/Telegram-operator_UI-26A5E4?logo=telegram&logoColor=white)
 ![launchd](https://img.shields.io/badge/launchd-macOS-999999?logo=apple&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-158_passed-2EA043)
+![Tests](https://img.shields.io/badge/tests-174_passed-2EA043)
 
 </div>
 
@@ -38,8 +38,9 @@ actions such as publishing or outbound communication.
 
 ## Current State Snapshot
 
-Last verified: **2026-08-12** on the local Mac host. See the factual
-[system baseline](docs/SYSTEM_BASELINE_2026-08-12.md).
+Last verified: **2026-08-13** on the local Mac host. See the factual
+[system baseline](docs/SYSTEM_BASELINE_2026-08-12.md) and the current
+[automation and LLM efficiency plan](docs/AUTOMATION_AND_LLM_EFFICIENCY_PLAN_2026-08-13.md).
 
 | Area | Current fact |
 |---|---|
@@ -49,9 +50,9 @@ Last verified: **2026-08-12** on the local Mac host. See the factual
 | Pixel office | `http://localhost:5070` |
 | Agent dashboard status | 8/8 required agents available + 1 on-demand agent |
 | Queue | No active queued or failed tasks at last check |
-| Tests | `158 passed` in `agents/tests` |
+| Tests | `174 passed` in `agents/tests` |
 | Default Groq model | `groq/openai/gpt-oss-120b` |
-| Production LLM chain | Gemini 3.6 Flash -> Groq GPT OSS 120B |
+| Production LLM chain | Groq GPT OSS 120B primary; Gemini 3.6 Flash and Groq fallback |
 | Paid API budget | 2500 RUB cap, current paid spend shown as 0.00 RUB |
 | Security boundary | Core Docker loopback-only; remote dashboard API requires bearer auth |
 | Restore test | Passing weekly; latest backup restored into a disposable Postgres container |
@@ -65,7 +66,7 @@ Known operator items are documented instead of hidden:
 | Optional web proxies | Qwen/GLM/Kimi processes could be up while real generation failed | Autostart disabled until re-auth plus successful smoke-test |
 | Historical bad reports | Old June reports contain fake publication/product claims | New output contracts and tests block these patterns going forward |
 | Telegram network noise | VPN/TLS can produce isolated handshake/EOF timeouts | Alert requires three consecutive transient failures; bots recover automatically |
-| Disk headroom | About 22 GiB remains after safe Docker image cleanup | Doctor warns below 15 GiB; keep at least 15-20 GiB free |
+| Disk headroom | About 20 GiB remains after runtime hardening | Doctor warns below 15 GiB; keep at least 15-20 GiB free |
 
 ---
 
@@ -400,6 +401,8 @@ make doctor
 make security-check
 make test
 make audit
+make llm-report
+make model-eval
 make release-check
 
 # Dashboard state
@@ -465,10 +468,17 @@ operating environment; production agents do not depend on either submodule.
 
 ## Roadmap: What Would Improve The System Next
 
+The measured, acceptance-criteria-driven plan is maintained in
+[docs/AUTOMATION_AND_LLM_EFFICIENCY_PLAN_2026-08-13.md](docs/AUTOMATION_AND_LLM_EFFICIENCY_PLAN_2026-08-13.md).
+
 | Priority | Improvement | Reason |
 |---|---|---|
 | P0 | Refresh Google Calendar OAuth token | Restores external calendar writes |
+| P0 | Add one Action Inbox and consolidated morning plan | Turns overlapping reports into tracked decisions |
+| P0 | Close the calendar and lead follow-up loops | Verifies actions in external systems instead of only reporting them |
 | P0 | Keep at least 15-20 GiB free on the Data volume | Prevents local services and backups from failing |
+| P1 | Connect production traces and prompt versions to Langfuse | Makes model/prompt changes measurable and reversible |
+| P1 | Replace hash-vector memory with tested multilingual embeddings | Makes retrieval semantic instead of approximate |
 | P1 | Isolate production Python dependencies in a locked venv | Removes global conda package conflicts |
 | P1 | Restrict or stop the separate `amori-local-*` mobile dev stack when idle | Removes 14 LAN-visible development ports |
 | P1 | Add real image generation provider or ComfyUI bridge | Turns visual briefs into assets |

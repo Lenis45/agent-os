@@ -53,6 +53,9 @@ ALLOW_ORIGINS = {
 }
 PG = "ai_postgres"
 DOCKER = os.environ.get("DOCKER_BIN", "/usr/local/bin/docker")
+AMORI_PYTHON = os.environ.get("AMORI_PYTHON", os.path.expanduser("~/ai-infra/.venv/bin/python"))
+if not os.path.isfile(AMORI_PYTHON):
+    AMORI_PYTHON = "/opt/anaconda3/bin/python3"
 
 # Агенты: (key, имя, расписание, тип запуска, контур, launchd-label|None)
 AGENTS = [
@@ -190,7 +193,7 @@ MODEL_CHOICES = [
     "qwen-free/qwen3.7-max",         # Qwen (FreeQwenApi :3264) — лучший общий, free
     "qwen-free/qwen3-coder-plus",    # Qwen — для кода, free
     "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
-    "groq/qwen/qwen3-32b",            # Groq — быстрый Qwen fallback, free/dev tier
+    "groq/openai/gpt-oss-20b",        # Groq — экономичный кандидат после eval
     "gemini/gemini-3.6-flash",       # Gemini — рабочий API fallback
     "ollama/qwen3.6:35b-a3b-q4_K_M", # локально — универсальный анализ
     "ollama/qwen3.6:27b-q4_K_M",     # локально — код и сложные задачи
@@ -250,6 +253,14 @@ def build_state():
             "SELECT agent, count(*) calls, sum(prompt_tokens+completion_tokens) tokens, "
             "round(sum(cost_rub)::numeric,2) cost, to_char(max(ts),'MM-DD HH24:MI') last "
             "FROM llm_usage GROUP BY agent ORDER BY calls DESC")
+        f_usage_7d = ex.submit(psql_json, "ops_db",
+            "SELECT count(*) calls, COALESCE(sum(prompt_tokens+completion_tokens),0) tokens, "
+            "count(*) FILTER (WHERE token_count_source='provider') provider_calls, "
+            "count(*) FILTER (WHERE meta @> '{\"cache_metrics_available\": true}'::jsonb) cache_calls, "
+            "COALESCE(sum(cached_prompt_tokens),0) cached_tokens, "
+            "COALESCE(sum(prompt_tokens) FILTER "
+            "(WHERE meta @> '{\"cache_metrics_available\": true}'::jsonb),0) cache_prompt_tokens "
+            "FROM llm_usage WHERE ts >= now()-interval '7 days'")
         f_runs = ex.submit(psql_json, "ops_db",
             "SELECT kind, status, to_char(ts,'MM-DD HH24:MI') ts FROM infra_runs ORDER BY ts DESC LIMIT 8")
         f_hb = ex.submit(psql_json, "ops_db",
@@ -311,6 +322,17 @@ def build_state():
             "AND status NOT IN ('converted','lost')) overdue FROM leads")
 
         usage = f_usage.result()
+        usage_7d_rows = f_usage_7d.result()
+        usage_7d = usage_7d_rows[0] if usage_7d_rows else {}
+        usage_calls = int(usage_7d.get("calls") or 0)
+        provider_calls = int(usage_7d.get("provider_calls") or 0)
+        cache_prompt = int(usage_7d.get("cache_prompt_tokens") or 0)
+        usage_7d["measurement_coverage_pct"] = round(
+            provider_calls * 100 / usage_calls, 1
+        ) if usage_calls else 0
+        usage_7d["cache_hit_rate_pct"] = round(
+            int(usage_7d.get("cached_tokens") or 0) * 100 / cache_prompt, 1
+        ) if cache_prompt else None
         usage_by_agent = {u["agent"]: {"calls": u["calls"], "last": u["last"]} for u in usage}
         containers = f_containers.result()
         runs = f_runs.result()
@@ -326,8 +348,11 @@ def build_state():
                  psql_json("ops_db", "SELECT agent_key, model FROM agent_config WHERE model IS NOT NULL AND model<>''")}
     for a in agents:
         model = overrides.get(a["key"]) or ROUTING_DEFAULT.get(a["key"], "groq/openai/gpt-oss-120b")
-        if model == "groq/llama-3.3-70b-versatile":
-            model = "groq/openai/gpt-oss-120b"
+        model = {
+            "groq/llama-3.3-70b-versatile": "groq/openai/gpt-oss-120b",
+            "groq/qwen/qwen3-32b": "groq/openai/gpt-oss-120b",
+            "groq/meta-llama/llama-4-scout-17b-16e-instruct": "groq/qwen/qwen3.6-27b",
+        }.get(model, model)
         a["model"] = model
         a["model_overridden"] = a["key"] in overrides
     projects = f_projects.result()
@@ -351,7 +376,8 @@ def build_state():
             "containers_up": sum(1 for v in containers.values() if v), "containers_total": len(containers),
             "month_cost": f_cost.result() or "0", "paid_cost": f_paid.result() or "0", "paid_cap": budget_cap,
         },
-        "agents": agents, "usage": usage, "runs": runs, "heartbeats": hb,
+        "agents": agents, "usage": usage, "usage_7d": usage_7d,
+        "runs": runs, "heartbeats": hb,
         "tier1": f_tier1.result(), "containers": containers,
         "qdrant": f_qdrant.result(), "dbs": f_dbs.result(),
         "projects": projects, "reports": f_reports.result() or [],
@@ -490,7 +516,7 @@ class H(BaseHTTPRequestHandler):
                 if not goal:
                     return self._send(400, json.dumps({"error": "no goal"}))
                 ag = os.path.expanduser("~/ai-infra/agents")
-                subprocess.Popen(["/opt/anaconda3/bin/python3", os.path.join(ag, "project_manager.py"), goal], cwd=ag)
+                subprocess.Popen([AMORI_PYTHON, os.path.join(ag, "project_manager.py"), goal], cwd=ag)
                 return self._send(200, json.dumps({"ok": True, "goal": goal}))
             elif self.path.startswith("/api/content/new"):
                 brief = str(body.get("brief", "")).strip()
@@ -499,7 +525,7 @@ class H(BaseHTTPRequestHandler):
                 if not brief:
                     return self._send(400, json.dumps({"error": "no brief"}))
                 ag = os.path.expanduser("~/ai-infra/agents")
-                subprocess.Popen(["/opt/anaconda3/bin/python3", os.path.join(ag, "content_factory.py"),
+                subprocess.Popen([AMORI_PYTHON, os.path.join(ag, "content_factory.py"),
                                   brief, channel, kind], cwd=ag)
                 return self._send(200, json.dumps({"ok": True, "brief": brief}))
             elif self.path.startswith("/api/content/approve") or self.path.startswith("/api/content/reject"):
@@ -527,7 +553,7 @@ class H(BaseHTTPRequestHandler):
                             "message": "Материал без текста или визуала нельзя согласовать",
                         }))
                 ag = os.path.expanduser("~/ai-infra/agents")
-                subprocess.Popen(["/opt/anaconda3/bin/python3", os.path.join(ag, "content_factory.py"),
+                subprocess.Popen([AMORI_PYTHON, os.path.join(ag, "content_factory.py"),
                                   action, str(cid)], cwd=ag)
                 return self._send(200, json.dumps({"ok": True, "id": cid, "action": action}))
             elif self.path.startswith("/api/budget"):

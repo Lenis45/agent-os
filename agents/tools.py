@@ -25,8 +25,13 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 import psycopg2
 
-_PY = "/opt/anaconda3/bin/python3"
 _AGENTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PY = os.getenv(
+    "AMORI_PYTHON",
+    os.path.join(os.path.dirname(_AGENTS_DIR), ".venv", "bin", "python"),
+)
+if not os.path.isfile(_PY):
+    _PY = "/opt/anaconda3/bin/python3"
 
 _PG = dict(
     host=os.getenv("OPS_DB_HOST", "127.0.0.1"),

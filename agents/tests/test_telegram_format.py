@@ -45,6 +45,12 @@ def test_normalize_plain_text_shortens_at_sentence_boundary():
     assert out.endswith(".")
 
 
+def test_normalize_plain_text_drops_unfinished_provider_reasoning():
+    raw = "Готовый ответ<think>внутреннее рассуждение без закрывающего тега"
+
+    assert normalize_plain_text(raw) == "Готовый ответ"
+
+
 def test_notify_send_normalizes_body_before_telegram(monkeypatch):
     captured = {}
 

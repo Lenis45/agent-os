@@ -7,8 +7,20 @@
 cd ~/ai-infra
 make doctor          # процессы, HTTP, Telegram, backup, disk
 make security-check  # права, bind-адреса, секреты, firewall
+make dependency-audit # CVE Python-пакетов + high-confidence static scan
 make audit           # состояние агентов и качество последних ответов
+make llm-report      # токены, точность измерения, кэш и главные потребители
+make model-eval      # безопасный canary 20B против текущего 120B baseline
 ```
+
+Изолированная Python-среда создаётся командой `make bootstrap-runtime`. Runtime
+использует `~/ai-infra/.venv/bin/python`; lock-файл обновляется только после полного
+`make release-check` и live-smoke основных провайдеров.
+
+Launchd указывает прямо на `.venv`. Старые пользовательские cron-записи могут
+содержать путь Anaconda, но `task_sync.py`, `calendar_agent.py` и `lead_manager.py`
+до импорта внешних пакетов выполняют безопасный re-exec в `.venv`. Это оставлено как
+совместимый fallback для macOS, где системный `crontab` может зависать при записи.
 
 ## Алерт «контейнер не запущен»
 ```bash
