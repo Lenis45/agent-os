@@ -130,9 +130,24 @@ def firewall_check() -> Check:
     return Check("PASS" if enabled else "WARN", "macOS firewall", output)
 
 
+def runtime_check() -> Check:
+    python = ROOT / ".venv" / "bin" / "python"
+    if not python.exists():
+        return Check("WARN", "Python runtime", "isolated .venv is absent; run make bootstrap-runtime")
+    code, output = command([str(python), "-m", "pip", "check"], timeout=30)
+    return Check(
+        "PASS" if code == 0 else "FAIL",
+        "Python runtime",
+        "isolated dependencies consistent" if code == 0 else output[:160],
+    )
+
+
 def main() -> int:
     checks = permission_checks()
-    checks.extend([core_port_check(), dev_port_check(), tracked_secret_check(), launchd_secret_check(), firewall_check()])
+    checks.extend([
+        core_port_check(), dev_port_check(), tracked_secret_check(), launchd_secret_check(),
+        runtime_check(), firewall_check(),
+    ])
     print("Amori security check")
     print("=" * 72)
     for item in checks:

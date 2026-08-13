@@ -1,18 +1,19 @@
 # agent-os — Python dependencies (aggregated from imports in agents/, mcp/, dashboard/).
-# Requires Python 3.12. Versions are intentionally unpinned here; freeze your
-# working environment for a reproducible lock:  pip freeze > requirements.lock.txt
+# Requires Python 3.12. Use `make bootstrap-runtime`; the tested transitive
+# dependency set lives in requirements.lock.txt.
 
 # ── Core / DB ────────────────────────────────────────────────
 psycopg2-binary
-python-dotenv
+python-dotenv>=1.2.2
 
 # ── LLM / agents ─────────────────────────────────────────────
-groq
-praisonaiagents
+groq>=1.6.0
+praisonaiagents[llm]>=1.6.166,<1.7
 langfuse
+tiktoken
 
 # ── MCP server ───────────────────────────────────────────────
-mcp[cli]
+mcp[cli]>=1.29.0,<2
 
 # ── Vector memory / embeddings ───────────────────────────────
 qdrant-client
@@ -21,10 +22,13 @@ sentence-transformers
 # ── Messaging / integrations ─────────────────────────────────
 python-telegram-bot
 telethon
-requests
+requests>=2.34.2
+openpyxl
 google-api-python-client
 google-auth
 google-auth-oauthlib
 
 # ── Tests ────────────────────────────────────────────────────
-pytest
+pytest>=9.1.1
+pip-audit>=2.10.1
+bandit>=1.9.4

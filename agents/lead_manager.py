@@ -1,5 +1,9 @@
 import os
 import json
+import runtime_bootstrap
+
+runtime_bootstrap.ensure_isolated_runtime()
+
 import requests
 import time
 import re

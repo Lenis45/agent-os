@@ -27,7 +27,9 @@ from dotenv import load_dotenv
 
 AGENTS = os.path.expanduser("~/ai-infra/agents")
 load_dotenv(os.path.join(AGENTS, ".env"))
-PY = "/opt/anaconda3/bin/python3"  # anaconda-python со всеми зависимостями ai-infra
+PY = os.getenv("AMORI_PYTHON", os.path.expanduser("~/ai-infra/.venv/bin/python"))
+if not os.path.isfile(PY):
+    PY = "/opt/anaconda3/bin/python3"
 DASH = os.environ.get("INFRA_DASH_URL", "http://localhost:8099")
 DBS = {"ops_db", "customer_db"}
 

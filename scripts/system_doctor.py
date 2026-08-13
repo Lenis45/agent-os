@@ -170,6 +170,17 @@ def disk_check() -> Check:
     return Check(level, "Disk", f"used={used_pct:.1f}%, free={free_gib:.1f} GiB")
 
 
+def runtime_check() -> Check:
+    python = ROOT / ".venv" / "bin" / "python"
+    if not python.exists():
+        return Check("WARN", "Python runtime", "isolated .venv is absent")
+    code, output = command(
+        [str(python), "-c", "import praisonaiagents,mcp,requests,dotenv;print('imports OK')"],
+        timeout=30,
+    )
+    return Check("PASS" if code == 0 else "FAIL", "Python runtime", output[:120])
+
+
 def main() -> int:
     env = {**load_env(ROOT / ".env"), **load_env(AGENTS / ".env")}
     checks: list[Check] = []
@@ -184,6 +195,7 @@ def main() -> int:
             http_check("n8n", "http://127.0.0.1:5678/healthz"),
             telegram_check("Telegram Emilia", env.get("TELEGRAM_BOT_TOKEN", "")),
             telegram_check("Telegram Support", env.get("SUPPORT_BOT_TOKEN", "")),
+            runtime_check(),
             backup_check(),
             disk_check(),
         ]

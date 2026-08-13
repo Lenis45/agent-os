@@ -3,6 +3,10 @@ import re
 import asyncio
 import argparse
 import time
+import runtime_bootstrap
+
+runtime_bootstrap.ensure_isolated_runtime()
+
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
