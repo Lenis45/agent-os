@@ -72,8 +72,13 @@ def test_support_answer_normalizer_shortens_long_reply():
 
 
 def test_orchestrator_reply_normalizer_removes_markdown_for_telegram():
-    raw = "**Итог:** нужно проверить фото.\n\n## Дальше\n`Отвечу коротко.`"
+    raw = (
+        "<think>Служебное рассуждение</think>"
+        "<final>**Итог:** нужно проверить фото.\n\n## Дальше\n`Отвечу коротко.`</final>"
+    )
     out = orchestrator.normalize_telegram_reply(raw)
+    assert "Служебное" not in out
+    assert "<final>" not in out
     assert "**" not in out
     assert "`" not in out
     assert "##" not in out

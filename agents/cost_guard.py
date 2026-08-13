@@ -59,7 +59,9 @@ def estimate_cost_rub(model: str, prompt_tokens: int, completion_tokens: int) ->
 
 
 def record_usage(agent: str, model: str, prompt_tokens: int = 0,
-                 completion_tokens: int = 0, source: str = "agent", meta: dict = None) -> float:
+                 completion_tokens: int = 0, source: str = "agent", meta: dict = None,
+                 cached_prompt_tokens: int = 0, latency_ms: int = None,
+                 token_count_source: str = "estimated") -> float:
     """Записать вызов в llm_usage. Возвращает рассчитанную стоимость в ₽."""
     import json
     tier = model_tier(model)
@@ -68,14 +70,63 @@ def record_usage(agent: str, model: str, prompt_tokens: int = 0,
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO llm_usage(agent, model, tier, prompt_tokens, completion_tokens, cost_rub, source, meta) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (agent, model, tier, prompt_tokens, completion_tokens, cost, source, json.dumps(meta or {})),
+            "INSERT INTO llm_usage(agent, model, tier, prompt_tokens, cached_prompt_tokens, "
+            "completion_tokens, latency_ms, token_count_source, cost_rub, source, meta) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (agent, model, tier, prompt_tokens, max(0, int(cached_prompt_tokens or 0)),
+             completion_tokens, latency_ms, token_count_source, cost, source,
+             json.dumps(meta or {})),
         )
         conn.commit()
     finally:
         conn.close()
     return cost
+
+
+def usage_summary(days: int = 7) -> dict:
+    """Compact usage baseline for dashboards and weekly operational reports."""
+    days = max(1, min(int(days), 365))
+    conn = ops_store.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT count(*), COALESCE(sum(prompt_tokens),0), "
+            "COALESCE(sum(cached_prompt_tokens),0), COALESCE(sum(completion_tokens),0), "
+            "count(*) FILTER (WHERE token_count_source='provider'), "
+            "count(*) FILTER (WHERE meta @> '{\"cache_metrics_available\": true}'::jsonb), "
+            "COALESCE(sum(prompt_tokens) FILTER "
+            "(WHERE meta @> '{\"cache_metrics_available\": true}'::jsonb),0), "
+            "COALESCE(round(avg(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)),0) "
+            "FROM llm_usage WHERE ts >= now() - (%s * interval '1 day')",
+            (days,),
+        )
+        (calls, prompt, cached, completion, provider_calls, cache_observed_calls,
+         cache_observed_prompt_tokens, avg_latency_ms) = cur.fetchone()
+        cur.execute(
+            "SELECT agent, count(*), COALESCE(sum(prompt_tokens+completion_tokens),0) "
+            "FROM llm_usage WHERE ts >= now() - (%s * interval '1 day') "
+            "GROUP BY agent ORDER BY sum(prompt_tokens+completion_tokens) DESC LIMIT 5",
+            (days,),
+        )
+        top_agents = [
+            {"agent": agent, "calls": count, "tokens": tokens}
+            for agent, count, tokens in cur.fetchall()
+        ]
+        return {
+            "days": days,
+            "calls": calls,
+            "prompt_tokens": prompt,
+            "cached_prompt_tokens": cached,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "provider_calls": provider_calls,
+            "cache_observed_calls": cache_observed_calls,
+            "cache_observed_prompt_tokens": cache_observed_prompt_tokens,
+            "avg_latency_ms": int(avg_latency_ms or 0),
+            "top_agents": top_agents,
+        }
+    finally:
+        conn.close()
 
 
 def month_spend_rub(paid_only: bool = True) -> float:

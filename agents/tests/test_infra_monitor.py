@@ -136,3 +136,27 @@ def test_telegram_probe_retries_transient_network_error(monkeypatch):
     assert available is True
     assert reason == "ok"
     assert calls["count"] == 2
+
+
+def test_weekly_digest_includes_llm_usage(monkeypatch):
+    infra_monitor.ok.clear()
+    infra_monitor.warn.clear()
+    infra_monitor.crit.clear()
+    sent = []
+    monkeypatch.setattr(infra_monitor, "run_check", lambda: 0)
+    monkeypatch.setattr(infra_monitor, "OPS", True)
+    monkeypatch.setattr(infra_monitor.notify, "send", lambda message, _level: sent.append(message))
+
+    import cost_guard
+    import tier1_log
+    monkeypatch.setattr(cost_guard, "month_spend_rub", lambda paid_only=True: 0)
+    monkeypatch.setattr(cost_guard, "remaining_paid_rub", lambda: 2500)
+    monkeypatch.setattr(cost_guard, "usage_summary", lambda _days: {
+        "calls": 12,
+        "total_tokens": 3456,
+    })
+    monkeypatch.setattr(tier1_log, "stats", lambda _days: {"total": 1, "applied": 1})
+
+    infra_monitor.run_digest()
+
+    assert sent and "LLM за 7д: 12 выз., 3 456 токенов" in sent[0]

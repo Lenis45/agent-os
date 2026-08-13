@@ -26,6 +26,8 @@ def normalize_plain_text(text: str, max_chars: int | None = None) -> str:
     if not s:
         return ""
 
+    s = re.sub(r"<think>[\s\S]*?(?:</think>|$)", "", s, flags=re.I)
+    s = re.sub(r"</?final>", "", s, flags=re.I)
     s = re.sub(r"```(?:\w+)?\n?", "", s)
     s = s.replace("```", "")
     s = re.sub(r"\*\*(.*?)\*\*", r"\1", s, flags=re.S)

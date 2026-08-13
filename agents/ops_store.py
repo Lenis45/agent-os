@@ -42,11 +42,17 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     model           TEXT        NOT NULL,
     tier            SMALLINT    NOT NULL DEFAULT 3,   -- 1=manual flagship, 2=paid API, 3=free/local
     prompt_tokens   INTEGER     NOT NULL DEFAULT 0,
+    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER   NOT NULL DEFAULT 0,
+    latency_ms      INTEGER,
+    token_count_source TEXT     NOT NULL DEFAULT 'estimated', -- provider | local_o200k | heuristic
     cost_rub        NUMERIC(12,4) NOT NULL DEFAULT 0,
     source          TEXT        NOT NULL DEFAULT 'agent',
     meta            JSONB       NOT NULL DEFAULT '{}'
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS cached_prompt_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS latency_ms INTEGER;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS token_count_source TEXT NOT NULL DEFAULT 'estimated';
 CREATE INDEX IF NOT EXISTS idx_llm_usage_ts    ON llm_usage (ts);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_agent ON llm_usage (agent);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_tier  ON llm_usage (tier);
@@ -70,6 +76,12 @@ CREATE INDEX IF NOT EXISTS idx_tier1_status ON tier1_sessions (status);
 CREATE TABLE IF NOT EXISTS budget_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automation_state (
+    key        TEXT PRIMARY KEY,
+    value      JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Прогоны инфраструктурных задач (backup / restore_test / monitor / digest)
@@ -264,6 +276,33 @@ def set_budget(key: str, value: str) -> None:
             "INSERT INTO budget_config(key, value) VALUES (%s, %s) "
             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
             (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_automation_state(key: str, default=None):
+    """Read compact state used to avoid repeating unchanged automation work."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM automation_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+    finally:
+        conn.close()
+
+
+def set_automation_state(key: str, value: dict) -> None:
+    import json
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO automation_state(key, value, updated_at) VALUES (%s,%s,now()) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()",
+            (key, json.dumps(value or {})),
         )
         conn.commit()
     finally:

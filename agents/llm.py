@@ -2,8 +2,8 @@
 llm — единая обёртка работы с моделями для агентов (v3.0 hardening).
 
 Закрывает пробел: раньше ни один агент не учитывал LLM-расходы. Теперь любой вызов
-через praisonaiagents (litellm под капотом) автоматически пишется в ops_db.llm_usage
-через success-callback litellm + cost_guard. Плюс:
+через praisonaiagents (litellm под капотом) пишет provider-счётчики агента в
+ops_db.llm_usage, а при их отсутствии использует локальную оценку. Плюс:
   - build_agent(agent_key, ...) — Agent с моделью из router (роутинг + бюджет-гард),
   - run(agent, prompt, agent_key) — выполнение с ретраем,
   - groq_chat(...) — обёртка для прямых вызовов Groq SDK (orchestrator) с учётом usage,
@@ -12,6 +12,8 @@ llm — единая обёртка работы с моделями для аг
 import os
 import re
 import json
+import time
+from functools import lru_cache
 from types import SimpleNamespace
 from dotenv import load_dotenv
 
@@ -27,6 +29,10 @@ DEFAULT_GROQ_LITELLM_MODEL = f"groq/{DEFAULT_GROQ_MODEL}"
 DEPRECATED_GROQ_MODELS = {
     "llama-3.3-70b-versatile",
     "groq/llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
+    "groq/qwen/qwen3-32b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "groq/meta-llama/llama-4-scout-17b-16e-instruct",
 }
 
 
@@ -36,27 +42,82 @@ def normalize_groq_model(model: str, litellm: bool = False) -> str:
     if not value:
         return DEFAULT_GROQ_LITELLM_MODEL if litellm else DEFAULT_GROQ_MODEL
     if value.lower() in DEPRECATED_GROQ_MODELS:
+        if "scout" in value.lower():
+            replacement = "qwen/qwen3.6-27b"
+            return f"groq/{replacement}" if litellm or value.startswith("groq/") else replacement
         return DEFAULT_GROQ_LITELLM_MODEL if litellm or value.startswith("groq/") else DEFAULT_GROQ_MODEL
     return value
 
-def count_tokens(model: str, text: str) -> int:
-    """Быстрая оценка числа токенов (эвристика ~len/4). Без сети — litellm.token_counter
-    тянет токенайзер по сети и виснет на таймауте, поэтому не используем его."""
+@lru_cache(maxsize=1)
+def _token_encoder():
+    """Load the local tokenizer lazily; no provider request is made."""
+    import tiktoken
+    return tiktoken.get_encoding("o200k_base")
+
+
+def token_count(text: str) -> tuple[int, str]:
+    """Return a local token estimate and the method used for observability."""
     if not text:
-        return 0
-    return max(1, len(str(text)) // 4)
+        return 0, "local_o200k"
+    value = str(text)
+    try:
+        return max(1, len(_token_encoder().encode(value))), "local_o200k"
+    except Exception:
+        return max(1, len(value) // 4), "heuristic"
+
+
+def count_tokens(model: str, text: str) -> int:
+    """Backward-compatible token estimate; provider usage remains authoritative."""
+    return token_count(text)[0]
 
 
 def _record(agent_key: str, model: str, prompt: str, result, source: str = "agent"):
     """Записать вызов в ops_db.llm_usage (учёт не должен ломать основной поток)."""
     try:
+        prompt_tokens, prompt_source = token_count(prompt)
+        completion_tokens, completion_source = token_count(str(result))
         cost_guard.record_usage(
             agent_key, model,
-            count_tokens(model, prompt), count_tokens(model, str(result)),
+            prompt_tokens, completion_tokens,
             source=source,
+            token_count_source=(
+                prompt_source if prompt_source == completion_source else "mixed_estimate"
+            ),
         )
     except Exception:
         pass
+
+
+def _agent_usage(agent) -> dict:
+    """Return cumulative provider counters exposed by Praison, if available."""
+    try:
+        summary = dict(agent.cost_summary or {})
+        return {
+            "prompt_tokens": max(0, int(summary.get("tokens_in") or 0)),
+            "completion_tokens": max(0, int(summary.get("tokens_out") or 0)),
+            "llm_calls": max(0, int(summary.get("llm_calls") or 0)),
+        }
+    except Exception:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0}
+
+
+def _record_agent_usage(agent_key: str, model: str, agent, before: dict,
+                        prompt: str, result, latency_ms: int) -> None:
+    after = _agent_usage(agent)
+    prompt_tokens = max(0, after["prompt_tokens"] - before["prompt_tokens"])
+    completion_tokens = max(0, after["completion_tokens"] - before["completion_tokens"])
+    llm_calls = max(0, after["llm_calls"] - before["llm_calls"])
+    if prompt_tokens or completion_tokens:
+        try:
+            cost_guard.record_usage(
+                agent_key, model, prompt_tokens, completion_tokens,
+                source="agent", latency_ms=latency_ms, token_count_source="provider",
+                meta={"cache_metrics_available": False, "llm_calls": llm_calls or 1},
+            )
+            return
+        except Exception:
+            pass
+    _record(agent_key, model, prompt, result)
 
 
 GROQ_FALLBACK = normalize_groq_model(os.getenv("FREE_FALLBACK_MODEL", DEFAULT_GROQ_LITELLM_MODEL), litellm=True)
@@ -73,7 +134,9 @@ FREEQWEN_ENABLED = os.getenv("FREEQWEN_ENABLED", "0").strip().lower() in {"1", "
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.6-flash")
 GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini/gemini-3.6-flash")
-GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+GROQ_VISION_MODEL = normalize_groq_model(
+    os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b"), litellm=False
+)
 
 
 def _resolve_llm(model):
@@ -106,6 +169,16 @@ def _is_empty(r) -> bool:
     return not r or not str(r).strip()
 
 
+def clean_model_output(value) -> str:
+    """Remove provider reasoning wrappers before text reaches users or storage."""
+    text = str(value or "")
+    # Some providers can be truncated before a closing reasoning tag. In that
+    # case it is safer to drop the unfinished block than expose it to Telegram.
+    text = re.sub(r"<think>[\s\S]*?(?:</think>|$)", "", text, flags=re.I)
+    text = re.sub(r"</?final>", "", text, flags=re.I)
+    return text.strip()
+
+
 def fallback_models(primary_model=None):
     """Ordered, configured text fallbacks, excluding the model that just failed."""
     configured = os.getenv(
@@ -125,7 +198,7 @@ def fallback_models(primary_model=None):
 
 
 def _fallback_text(prompt, agent_key, *, primary_model=None, agent_kwargs=None):
-    """Try configured providers in order and return ``(text, used_model)``."""
+    """Try configured providers and return text, model, and provider counters."""
     from praisonaiagents import Agent
 
     kwargs = dict(agent_kwargs or {})
@@ -135,12 +208,44 @@ def _fallback_text(prompt, agent_key, *, primary_model=None, agent_kwargs=None):
         print(f"[llm] {agent_key}: fallback -> {model}")
         try:
             candidate = Agent(model=_resolve_llm(model), **kwargs)
-            result = candidate.start(prompt)
+            usage_before = _agent_usage(candidate)
+            started = time.perf_counter()
+            result = clean_model_output(candidate.start(prompt))
             if not _is_empty(result):
-                return str(result), model
+                usage_after = _agent_usage(candidate)
+                return result, model, {
+                    "prompt_tokens": max(
+                        0, usage_after["prompt_tokens"] - usage_before["prompt_tokens"]
+                    ),
+                    "completion_tokens": max(
+                        0, usage_after["completion_tokens"] - usage_before["completion_tokens"]
+                    ),
+                    "llm_calls": max(0, usage_after["llm_calls"] - usage_before["llm_calls"]),
+                    "latency_ms": round((time.perf_counter() - started) * 1000),
+                }
         except Exception as e:
             print(f"[llm] {agent_key} fallback {model} упал: {e}")
-    return "", ""
+    return "", "", {}
+
+
+def _record_fallback_usage(agent_key: str, model: str, usage: dict,
+                           prompt: str, result) -> None:
+    if usage.get("prompt_tokens") or usage.get("completion_tokens"):
+        try:
+            cost_guard.record_usage(
+                agent_key, model,
+                usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+                source="fallback", latency_ms=usage.get("latency_ms"),
+                token_count_source="provider",
+                meta={
+                    "cache_metrics_available": False,
+                    "llm_calls": usage.get("llm_calls") or 1,
+                },
+            )
+            return
+        except Exception:
+            pass
+    _record(agent_key, model, prompt, result, source="fallback")
 
 
 def _messages_prompt(messages):
@@ -158,19 +263,22 @@ def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
     Usage пишется детерминированно."""
     build = _AGENT_BUILD.get(id(agent))
     model = build[0] if build else (router.get_model(agent_key) if agent_key else "unknown")
+    usage_before = _agent_usage(agent)
+    started = time.perf_counter()
 
     @net_retry(attempts=attempts)
     def _go():
         return agent.start(prompt)
 
     try:
-        result = _go()
+        result = clean_model_output(_go())
     except Exception as e:
         result = ""
         print(f"[llm] {agent_key} вызов упал: {e}")
 
+    used_fallback = False
     if _is_empty(result) and build:
-        result, fallback_model = _fallback_text(
+        result, fallback_model, fallback_usage = _fallback_text(
             prompt,
             agent_key,
             primary_model=model,
@@ -178,9 +286,16 @@ def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
         )
         if fallback_model:
             model = fallback_model
+            used_fallback = True
 
     if agent_key:
-        _record(agent_key, model, prompt, result)
+        if used_fallback:
+            _record_fallback_usage(agent_key, model, fallback_usage, prompt, result)
+        else:
+            _record_agent_usage(
+                agent_key, model, agent, usage_before, prompt, result,
+                round((time.perf_counter() - started) * 1000),
+            )
     return result
 
 
@@ -192,28 +307,58 @@ def groq_chat(client, agent_key: str, messages, model: str = DEFAULT_GROQ_MODEL,
     def _go():
         return client.chat.completions.create(model=model, messages=messages, **kwargs)
 
+    started = time.perf_counter()
     try:
         resp = _go()
     except Exception as primary_error:
-        text, fallback_model = _fallback_text(
+        text, fallback_model, fallback_usage = _fallback_text(
             _messages_prompt(messages),
             agent_key,
             primary_model=f"groq/{model}",
         )
         if not text:
             raise primary_error
-        _record(agent_key, fallback_model, _messages_prompt(messages), text, source="fallback")
+        _record_fallback_usage(
+            agent_key, fallback_model, fallback_usage, _messages_prompt(messages), text
+        )
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
         )
+    cleaned = ""
     try:
         u = resp.usage
+        details = getattr(u, "prompt_tokens_details", None)
+        cached_tokens = getattr(details, "cached_tokens", 0) if details is not None else 0
         cost_guard.record_usage(agent_key, f"groq/{model}",
                                 getattr(u, "prompt_tokens", 0) or 0,
-                                getattr(u, "completion_tokens", 0) or 0, source="groq")
+                                getattr(u, "completion_tokens", 0) or 0, source="groq",
+                                cached_prompt_tokens=cached_tokens or 0,
+                                latency_ms=round((time.perf_counter() - started) * 1000),
+                                token_count_source="provider",
+                                meta={
+                                    "cache_metrics_available": details is not None,
+                                    "request_id": getattr(resp, "id", None),
+                                })
     except Exception:
         pass
+    try:
+        cleaned = clean_model_output(resp.choices[0].message.content)
+        resp.choices[0].message.content = cleaned
+    except Exception:
+        pass
+    if not cleaned:
+        text, fallback_model, fallback_usage = _fallback_text(
+            _messages_prompt(messages), agent_key, primary_model=f"groq/{model}"
+        )
+        if text:
+            _record_fallback_usage(
+                agent_key, fallback_model, fallback_usage, _messages_prompt(messages), text
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+                usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+            )
     return resp
 
 
@@ -258,7 +403,9 @@ def _freeqwen_chat(messages, model: str, max_tokens: int = 1500,
     })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode())
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    return clean_model_output(
+        (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    )
 
 
 def _gemini_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
@@ -299,7 +446,7 @@ def _gemini_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
         raise last if last else RuntimeError("gemini vision: unknown error")
     candidates = data.get("candidates") or []
     parts_out = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
-    return "\n".join(p.get("text", "") for p in parts_out).strip()
+    return clean_model_output("\n".join(p.get("text", "") for p in parts_out))
 
 
 def _groq_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
@@ -328,7 +475,7 @@ def _groq_vision_analyze(prompt: str, image_paths, timeout: int = 90) -> str:
         temperature=0.2,
         max_tokens=1200,
     )
-    return (resp.choices[0].message.content or "").strip()
+    return clean_model_output(resp.choices[0].message.content or "")
 
 
 def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
@@ -404,7 +551,9 @@ def _openmodel_chat(prompt: str, system: str = "", model: str = None,
             r = requests.post(url, json=body, headers=hdr, timeout=timeout)
             r.raise_for_status()
             blocks = r.json().get("content") or []
-            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+            return clean_model_output(
+                "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            )
         except requests.HTTPError as e:
             status = getattr(e.response, "status_code", 0)
             if 400 <= status < 500 and status not in {408, 425, 429}:
@@ -448,7 +597,7 @@ def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
             result = ""
     # 2) Configured fallback chain — бот не должен молчать.
     if _is_empty(result) or _looks_garbled(result):
-        result, fallback_model = _fallback_text(
+        result, fallback_model, fallback_usage = _fallback_text(
             prompt,
             agent_key,
             primary_model=used_model,
@@ -456,8 +605,10 @@ def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
         )
         if fallback_model:
             used_model = fallback_model
+            _record_fallback_usage(agent_key, used_model, fallback_usage, prompt, result)
+            return clean_model_output(result)
     _record(agent_key, used_model or "unknown", prompt, result, source="brain")
-    return str(result)
+    return clean_model_output(result)
 
 
 # Понятный алиас (исторически функция называется qwen_answer)
