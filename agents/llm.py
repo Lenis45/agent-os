@@ -220,13 +220,22 @@ def _compact_router_prompt(prompt: str) -> str:
     return text[:head] + marker + text[-tail:]
 
 
-def smart_router_answer(prompt: str, cwd: str = None, timeout: int = 900) -> str:
+def smart_router_answer(
+    prompt: str,
+    cwd: str = None,
+    timeout: int = 900,
+    routing_prompt: str = None,
+) -> str:
     """Use local classification and subscription CLIs without API credentials."""
     executable = _smart_router_executable()
     if not SMART_ROUTER_ENABLED or not executable:
         return ""
+    command = [executable, "--json", "--cwd", cwd or os.getcwd()]
+    if routing_prompt:
+        command.extend(["--routing-text", _compact_router_prompt(routing_prompt)])
+    command.append(_compact_router_prompt(prompt))
     completed = subprocess.run(
-        [executable, "--json", "--cwd", cwd or os.getcwd(), _compact_router_prompt(prompt)],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
