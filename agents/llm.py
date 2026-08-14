@@ -13,6 +13,9 @@ import os
 import re
 import json
 import time
+import shutil
+import subprocess
+import urllib.request
 from functools import lru_cache
 from types import SimpleNamespace
 from dotenv import load_dotenv
@@ -137,6 +140,104 @@ GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini/gemini-3.6-flash")
 GROQ_VISION_MODEL = normalize_groq_model(
     os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b"), litellm=False
 )
+OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434").rstrip("/")
+LOCAL_FIRST_ENABLED = os.getenv("LOCAL_FIRST_ENABLED", "1").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+ALLOW_EXTERNAL_FALLBACK = os.getenv("ALLOW_EXTERNAL_LLM_FALLBACK", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+LOCAL_ROUTER_MODEL = os.getenv("LOCAL_ROUTER_MODEL", "qwen3:1.7b")
+LOCAL_TEXT_MODEL = os.getenv("LOCAL_TEXT_MODEL", "qwen3:1.7b")
+LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "qwen3-vl:2b")
+SMART_ROUTER_ENABLED = os.getenv("SMART_ROUTER_ENABLED", "1").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+SMART_ROUTER_COMMAND = os.getenv("SMART_ROUTER_COMMAND", "~/.local/bin/amori-ai")
+SMART_ROUTER_MAX_CHARS = int(os.getenv("SMART_ROUTER_MAX_CHARS", "16000"))
+
+
+def _ollama_chat(messages, model: str, max_tokens: int = 1500,
+                 temperature: float = 0.2, timeout: int = 180):
+    """Call private Ollama and return final text plus native token counters."""
+    normalized_messages = [dict(message) for message in messages]
+    if model.startswith("qwen3") and normalized_messages:
+        last = normalized_messages[-1]
+        content = last.get("content")
+        if isinstance(content, str) and "/no_think" not in content:
+            last["content"] = content + "\n/no_think"
+    body = json.dumps({
+        "model": model,
+        "messages": normalized_messages,
+        "stream": False,
+        "think": False,
+        "keep_alive": "10m",
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        OLLAMA_API_BASE + "/api/chat",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8") or "{}")
+    text = clean_model_output((payload.get("message") or {}).get("content", ""))
+    usage = {
+        "prompt_tokens": int(payload.get("prompt_eval_count") or 0),
+        "completion_tokens": int(payload.get("eval_count") or 0),
+    }
+    return text, usage
+
+
+def _compatible_response(text: str, prompt_tokens: int = 0, completion_tokens: int = 0):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            prompt_tokens_details=None,
+        ),
+    )
+
+
+def _smart_router_executable() -> str:
+    configured = os.path.expanduser(SMART_ROUTER_COMMAND)
+    if os.path.sep in configured:
+        return configured if os.path.isfile(configured) and os.access(configured, os.X_OK) else ""
+    return shutil.which(configured) or ""
+
+
+def _compact_router_prompt(prompt: str) -> str:
+    """Bound subscription context while preserving the task and latest evidence."""
+    text = str(prompt or "").strip()
+    if len(text) <= SMART_ROUTER_MAX_CHARS:
+        return text
+    marker = "\n\n[...контекст сокращён локальным маршрутизатором...]\n\n"
+    usable = max(200, SMART_ROUTER_MAX_CHARS - len(marker))
+    head = max(100, usable // 3)
+    tail = usable - head
+    return text[:head] + marker + text[-tail:]
+
+
+def smart_router_answer(prompt: str, cwd: str = None, timeout: int = 900) -> str:
+    """Use local classification and subscription CLIs without API credentials."""
+    executable = _smart_router_executable()
+    if not SMART_ROUTER_ENABLED or not executable:
+        return ""
+    completed = subprocess.run(
+        [executable, "--json", "--cwd", cwd or os.getcwd(), _compact_router_prompt(prompt)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise RuntimeError(detail[-1] if detail else "subscription router failed")
+    payload = json.loads(completed.stdout)
+    return clean_model_output(payload.get("answer", ""))
 
 
 def _resolve_llm(model):
@@ -183,7 +284,7 @@ def fallback_models(primary_model=None):
     """Ordered, configured text fallbacks, excluding the model that just failed."""
     configured = os.getenv(
         "LLM_FALLBACK_MODELS",
-        f"{GEMINI_TEXT_MODEL},{GROQ_FALLBACK}",
+        "ollama/qwen3:1.7b",
     )
     primary = str(primary_model or "").lower()
     result = []
@@ -300,8 +401,35 @@ def run(agent, prompt: str, agent_key: str = None, attempts: int = 2):
 
 
 def groq_chat(client, agent_key: str, messages, model: str = DEFAULT_GROQ_MODEL, **kwargs):
-    """Прямой вызов Groq SDK с ретраем и учётом usage (для orchestrator)."""
+    """Return an OpenAI-compatible response, using local Ollama first."""
     model = normalize_groq_model(model, litellm=False)
+    if LOCAL_FIRST_ENABLED:
+        started = time.perf_counter()
+        try:
+            text, usage = _ollama_chat(
+                messages,
+                LOCAL_ROUTER_MODEL,
+                max_tokens=int(kwargs.get("max_tokens", 500)),
+                temperature=float(kwargs.get("temperature", 0.1)),
+            )
+            if text:
+                cost_guard.record_usage(
+                    agent_key,
+                    f"ollama/{LOCAL_ROUTER_MODEL}",
+                    usage["prompt_tokens"],
+                    usage["completion_tokens"],
+                    source="local",
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                    token_count_source="provider",
+                    meta={"cache_metrics_available": False, "llm_calls": 1},
+                )
+                return _compatible_response(
+                    text, usage["prompt_tokens"], usage["completion_tokens"]
+                )
+        except Exception as error:
+            print(f"[llm] local router model failed: {error}")
+        if not ALLOW_EXTERNAL_FALLBACK:
+            raise RuntimeError("Локальная модель недоступна, внешний LLM fallback запрещён")
 
     @net_retry(attempts=2)
     def _go():
@@ -496,14 +624,41 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
                         "image_url": {"url": url}})
     result = ""
     used_model = ""
-    if FREEQWEN_ENABLED:
+    provider_usage_recorded = False
+    local_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
+    if LOCAL_FIRST_ENABLED:
+        try:
+            encoded = []
+            for path in (local_paths if isinstance(local_paths, (list, tuple)) else [local_paths]):
+                encoded.append(base64.b64encode(open(path, "rb").read()).decode("ascii"))
+            result, usage = _ollama_chat(
+                [{"role": "user", "content": prompt, "images": encoded}],
+                LOCAL_VISION_MODEL,
+                max_tokens=1200,
+                timeout=180,
+            )
+            if result:
+                used_model = f"ollama/{LOCAL_VISION_MODEL}"
+                cost_guard.record_usage(
+                    agent_key,
+                    used_model,
+                    usage["prompt_tokens"],
+                    usage["completion_tokens"],
+                    source="vision-local",
+                    token_count_source="provider",
+                    meta={"cache_metrics_available": False, "llm_calls": 1},
+                )
+                provider_usage_recorded = True
+        except Exception as e:
+            print(f"[llm] local vision failed: {e}")
+    if _is_empty(result) and ALLOW_EXTERNAL_FALLBACK and FREEQWEN_ENABLED:
         try:
             result = _freeqwen_chat([{"role": "user", "content": content}], model=model)
             if result:
                 used_model = f"qwen-free/{model}"
         except Exception as e:
             print(f"[llm] qwen vision упал: {e}")
-    if _is_empty(result):
+    if _is_empty(result) and ALLOW_EXTERNAL_FALLBACK:
         fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
         try:
             result = _groq_vision_analyze(prompt, fallback_paths)
@@ -511,7 +666,7 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
                 used_model = f"groq/{GROQ_VISION_MODEL}"
         except Exception as e:
             print(f"[llm] groq vision fallback упал: {e}")
-    if _is_empty(result):
+    if _is_empty(result) and ALLOW_EXTERNAL_FALLBACK:
         fallback_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
         try:
             result = _gemini_vision_analyze(prompt, fallback_paths)
@@ -519,7 +674,8 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
                 used_model = f"gemini/{GEMINI_VISION_MODEL}"
         except Exception as e:
             print(f"[llm] gemini vision fallback упал: {e}")
-    _record(agent_key, used_model, prompt, result, source="vision")
+    if not provider_usage_recorded:
+        _record(agent_key, used_model or "unknown", prompt, result, source="vision")
     return result
 
 
@@ -580,23 +736,45 @@ def _looks_garbled(text) -> bool:
 
 def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
                 model: str = None, max_tokens: int = 1500) -> str:
-    """Содержательный ответ через OpenModel и настроенную цепочку API-фолбэков.
+    """Содержательный local-first ответ с явным opt-in для внешних API.
 
     Имя историческое: Qwen web-proxy больше не является обязательным маршрутом.
     Алиас: brain_answer. Usage пишется детерминированно.
     """
     result = ""
     used_model = ""
-    # 1) OpenModel / DeepSeek (если есть ключ)
-    if OPENMODEL_ENABLED and OPENMODEL_API_KEY:
+    provider_usage_recorded = False
+    if LOCAL_FIRST_ENABLED:
+        try:
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+            result, usage = _ollama_chat(
+                messages, model or LOCAL_TEXT_MODEL, max_tokens=max_tokens
+            )
+            used_model = f"ollama/{model or LOCAL_TEXT_MODEL}"
+            cost_guard.record_usage(
+                agent_key,
+                used_model,
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                source="local",
+                token_count_source="provider",
+                meta={"cache_metrics_available": False, "llm_calls": 1},
+            )
+            provider_usage_recorded = True
+        except Exception as e:
+            print(f"[llm] local text model failed: {e}")
+            result = ""
+    if _is_empty(result) and ALLOW_EXTERNAL_FALLBACK and OPENMODEL_ENABLED and OPENMODEL_API_KEY:
         try:
             result = _openmodel_chat(prompt, system=system, max_tokens=max_tokens)
             used_model = f"openmodel/{OPENMODEL_MODEL}"
         except Exception as e:
             print(f"[llm] openmodel упал: {e}")
             result = ""
-    # 2) Configured fallback chain — бот не должен молчать.
-    if _is_empty(result) or _looks_garbled(result):
+    if ALLOW_EXTERNAL_FALLBACK and (_is_empty(result) or _looks_garbled(result)):
         result, fallback_model, fallback_usage = _fallback_text(
             prompt,
             agent_key,
@@ -607,7 +785,8 @@ def qwen_answer(prompt: str, system: str = "", agent_key: str = "orchestrator",
             used_model = fallback_model
             _record_fallback_usage(agent_key, used_model, fallback_usage, prompt, result)
             return clean_model_output(result)
-    _record(agent_key, used_model or "unknown", prompt, result, source="brain")
+    if not provider_usage_recorded:
+        _record(agent_key, used_model or "unknown", prompt, result, source="brain")
     return clean_model_output(result)
 
 

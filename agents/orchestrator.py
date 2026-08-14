@@ -286,8 +286,7 @@ def build_context(user_message: str) -> str:
 
 
 def tool_direct_answer(question: str, history: list) -> str:
-    """Содержательный ответ «мозга» на Qwen (qwen3.7-max) с богатым контекстом проекта.
-    Groq — авто-фолбэк внутри llm.qwen_answer, чтобы бот никогда не молчал."""
+    """Route a chat answer locally or to a subscription CLI by complexity."""
     system = f"""Ты — персональный AI-ассистент и «второй мозг» Дениса Колесникова, CEO стартапа Amori.
 {build_context(question)}
 
@@ -295,6 +294,14 @@ def tool_direct_answer(question: str, history: list) -> str:
 Если не хватает данных — скажи чего именно и предложи, что проверить. Не выдумывай факты."""
     context = "\n".join([f"{m['role']}: {m['content']}" for m in history[-6:]])
     prompt = f"История разговора:\n{context}\n\nВопрос Дениса: {question}"
+    try:
+        answer = llm.smart_router_answer(
+            f"{system}\n\n{prompt}", cwd=os.path.dirname(_HERE)
+        )
+        if answer:
+            return answer
+    except Exception as error:
+        log.warning("subscription router failed, using local brain: %s", error)
     return str(llm.qwen_answer(prompt, system=system, agent_key="orchestrator"))
 
 
@@ -1035,8 +1042,8 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     db.wait_ready("agents")  # на буте Postgres поднимается позже агента
-    text_chain = "OpenModel → Gemini → Groq" if llm.OPENMODEL_ENABLED else "Gemini → Groq"
-    vision_chain = "Qwen → Groq → Gemini" if llm.FREEQWEN_ENABLED else "Groq → Gemini"
+    text_chain = "Ollama → smart router (Codex/Claude by complexity)"
+    vision_chain = f"Ollama {llm.LOCAL_VISION_MODEL}"
     log.info("AI Orchestrator запущен (LLM: %s; vision: %s)", text_chain, vision_chain)
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
     app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()

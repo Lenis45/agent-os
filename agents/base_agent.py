@@ -7,6 +7,8 @@ base_agent — каркас работника AI-команды.
 
 process_one(agent_key) — обработать одну задачу воркера (вернёт True если была).
 """
+import os
+
 import tasks
 import report as report_mod
 import llm
@@ -29,9 +31,20 @@ def upstream_context(task: dict) -> str:
 
 
 def default_handler(task: dict) -> str:
-    """Универсальный воркер: выполнить spec задачи через LLM и вернуть текст-результат."""
+    """Универсальный воркер: local classifier -> local/Codex/Claude subscription."""
     domain = task.get("domain") or "ops"
     key = task.get("assignee") or "orchestrator"
+    prompt = (f"ЗАДАЧА: {task.get('title','')}\n\n"
+              f"ОПИСАНИЕ:\n{task.get('spec') or '(описание не задано)'}"
+              f"{upstream_context(task)}\n\n"
+              "Выполни задачу и верни итоговый результат.")
+    try:
+        routed = llm.smart_router_answer(prompt, cwd=os.path.dirname(os.path.dirname(__file__)))
+    except Exception as error:
+        print(f"[worker {key}] smart router недоступен, использую local fallback: {error}")
+        routed = ""
+    if routed:
+        return routed
     agent = llm.build_agent(
         key,
         name=key,
@@ -40,10 +53,6 @@ def default_handler(task: dict) -> str:
               "Делай конкретно, по делу, на русском. Возвращай готовый результат, "
               "пригодный для использования (текст/план/анализ), без воды."),
     )
-    prompt = (f"ЗАДАЧА: {task.get('title','')}\n\n"
-              f"ОПИСАНИЕ:\n{task.get('spec') or '(описание не задано)'}"
-              f"{upstream_context(task)}\n\n"
-              "Выполни задачу и верни итоговый результат.")
     return str(llm.run(agent, prompt, key))
 
 

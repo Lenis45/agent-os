@@ -68,10 +68,14 @@ launchctl load   ~/Library/LaunchAgents/<label>.plist          # перезаг�
 tail -50 ~/ai-infra/agents/<name>.log                          # последние ошибки
 ```
 
-## Бюджет платного API исчерпан
-Это не авария: `cost_guard` сам даунгрейдит на free tier (Groq). Если хочешь больше лимит:
+## Лимит подписки Codex или Claude исчерпан
+Это не роняет локальные ответы. Автовыбор Claude при проблеме авторизации/лимита
+переходит в Codex; явный `--to claude` честно возвращает ошибку. Проверка:
 ```bash
-cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 -c "import ops_store; ops_store.set_budget('monthly_paid_cap_rub','5000')"
+amori-ai --doctor
+amori-ai --doctor --live-check   # расходует по одному реальному запросу
+claude auth login               # если OAuth Claude отозван
+codex login status
 ```
 
 ## Ротация секрета (пока без secret-backend)
@@ -79,10 +83,27 @@ cd ~/ai-infra/agents && /opt/anaconda3/bin/python3 -c "import ops_store; ops_sto
 2. `cd ~/ai-infra && docker compose up -d <service>` для перечитки.
 3. Перезапустить затронутых агентов (unload/load).
 
-## Ollama / GPU-нода (denis-k) недоступна
-Не авария: `router.py` сам уводит ollama-задачи на Groq. На Mac с включённым VPN
-используй Tailscale IPv6 endpoint, потому что IPv4 `100.77.9.84` может уходить не через
-Tailscale.
+## Локальный Ollama на Mac недоступен
+Простые ответы временно не работают, но маршрут можно явно направить в подписочный CLI.
+Сначала восстанови локальный сервис:
+
+```bash
+brew services restart ollama
+curl --max-time 5 http://127.0.0.1:11434/api/tags
+ollama list
+amori-ai --doctor
+```
+
+Обязательные модели:
+
+```bash
+ollama pull qwen3:1.7b
+ollama pull qwen3-vl:2b
+```
+
+## Опциональная GPU-нода Windows недоступна
+Это не авария: основной контур работает на Mac. Для тяжёлых ручных задач Windows
+по-прежнему можно проверить отдельно:
 
 Проверить ноду:
 ```bash
