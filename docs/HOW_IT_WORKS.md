@@ -38,7 +38,7 @@ Amori AI-инфра — это локальная операционная си�
 | Pixel office | `http://localhost:5070` |
 | Тесты агентов | `182 passed` через `make test` |
 | Очередь задач | пустая на момент проверки |
-| Основная локальная модель | `qwen3:1.7b`; vision: `qwen3-vl:2b` |
+| Локальные модели | router: `qwen3:1.7b`; ответы: `qwen3:4b`; vision: `qwen3-vl:2b` |
 | Сложные запросы | `amori-ai` → Codex или Claude Code через подписку |
 | Платный API | лимит 2500 RUB/мес, текущий paid spend 0.00 RUB |
 | Restore-test | проходит, бэкап восстановим |

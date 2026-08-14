@@ -296,7 +296,9 @@ def tool_direct_answer(question: str, history: list) -> str:
     prompt = f"История разговора:\n{context}\n\nВопрос Дениса: {question}"
     try:
         answer = llm.smart_router_answer(
-            f"{system}\n\n{prompt}", cwd=os.path.dirname(_HERE)
+            f"{system}\n\n{prompt}",
+            cwd=os.path.dirname(_HERE),
+            routing_prompt=question,
         )
         if answer:
             return answer

@@ -505,10 +505,15 @@ def test_smart_router_bounds_context_and_uses_configured_executable(monkeypatch,
     monkeypatch.setattr(llm, "SMART_ROUTER_MAX_CHARS", 1200)
     monkeypatch.setattr(llm.subprocess, "run", fake_run)
 
-    result = llm.smart_router_answer("начало" + "x" * 3000 + "конец", cwd=str(tmp_path))
+    result = llm.smart_router_answer(
+        "начало" + "x" * 3000 + "конец",
+        cwd=str(tmp_path),
+        routing_prompt="короткий вопрос",
+    )
 
     assert result == "готово"
     assert captured["command"][0] == str(executable)
+    assert captured["command"][4:6] == ["--routing-text", "короткий вопрос"]
     assert len(captured["command"][-1]) < 1300
     assert "контекст сокращён" in captured["command"][-1]
     assert captured["command"][-1].endswith("конец")
