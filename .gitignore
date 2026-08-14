@@ -17,6 +17,7 @@ agents/*.log
 agents/*.log.*.gz
 agents/worker.log
 agents/runtime/
+agents/runtime/request-artifacts/
 backups/backup.log
 backups/backup-osascript.log
 *.log
