@@ -6,7 +6,7 @@ This folder contains long-running Telegram agents, scheduled automation,
 queue workers, shared safety contracts, database helpers, audit tools, and the
 test suite that protects the system from regressions.
 
-Verified: **2026-08-12** · tests: **158 passed**.
+Verified: **2026-08-14** · tests: **182 passed**.
 
 ---
 
@@ -56,8 +56,8 @@ flowchart TB
 |---|---|
 | `db.py` | PostgreSQL connection helper for `agents`, `ops_db`, `customer_db`; env-only password; connect/query timeouts |
 | `ops_store.py` | Schema/init and operational writes for `ops_db`: usage, runs, heartbeats, projects, tasks, reports |
-| `llm.py` | LLM wrapper, provider fallback, Groq SDK wrapper, JSON parser, unsupported Amori claim detector |
-| `router.py` | Per-agent model routing with UI overrides and Ollama -> Groq fallback |
+| `llm.py` | Local Ollama wrapper, subscription-router bridge, optional API fallback, JSON parser, output cleanup |
+| `router.py` | Local-first per-agent model routing with explicit opt-in for token APIs |
 | `cost_guard.py` | LLM usage accounting and paid API budget downgrade |
 | `agent_contracts.py` | Shared deterministic output contracts: product claims, external action phrases, env checks |
 | `notify.py` | Telegram notifications with chunking and retries |
@@ -72,28 +72,31 @@ flowchart TB
 
 ## Model Routing
 
-Default routing uses fast/free models where possible and falls back safely:
+Routine agents use a small private model. Complex user and queue requests go through
+`amori-ai`, which classifies locally before choosing a subscription CLI:
 
 ```python
 ROUTING = {
-    "chief_of_staff":     "groq/openai/gpt-oss-120b",
-    "email_watchdog":     "groq/openai/gpt-oss-120b",
-    "knowledge_curator":  "groq/openai/gpt-oss-120b",
-    "context_translator": "groq/openai/gpt-oss-120b",
-    "task_sync":          "ollama/qwen3.6:35b-a3b-q4_K_M",
-    "research_agent":     "ollama/qwen3.6:35b-a3b-q4_K_M",
-    "code_agent":         "ollama/qwen3.6:27b-q4_K_M",
-    "content_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
-    "analyst_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M",
+    "chief_of_staff":     "ollama/qwen3:1.7b",
+    "email_watchdog":     "ollama/qwen3:1.7b",
+    "knowledge_curator":  "ollama/qwen3:1.7b",
+    "context_translator": "ollama/qwen3:1.7b",
+    "task_sync":          "ollama/qwen3:1.7b",
+    "research_agent":     "ollama/qwen3:1.7b",
+    "code_agent":         "ollama/qwen3:1.7b",
+    "content_agent":      "ollama/qwen3:1.7b",
+    "analyst_agent":      "ollama/qwen3:1.7b",
 }
 ```
 
 Rules:
 
 - UI overrides live in `ops_db.agent_config` and are cached for 30 seconds.
-- If Ollama is unavailable, router returns `groq/openai/gpt-oss-120b`.
-- Text fallback is Gemini 3.6 Flash, then Groq GPT OSS 120B.
-- OpenModel is credit-gated through `OPENMODEL_ENABLED`; it is currently disabled after HTTP 402.
+- If Ollama is unavailable, agents fail softly; they do not spend API tokens silently.
+- `ALLOW_EXTERNAL_LLM_FALLBACK=1` is required before Gemini/Groq/OpenModel can be fallback providers.
+- `amori-ai` sends code and concrete technical execution to Codex, and architecture/deep analysis to Claude.
+- Subscription handoffs are capped at 16,000 characters and include no stored prompt text in metrics.
+- Vision uses local `qwen3-vl:2b` first.
 - Qwen/GLM/Kimi browser proxies are optional and excluded until a real smoke-test passes.
 - Deprecated Groq `llama-3.3-70b-versatile` is normalized away.
 - Paid model usage is guarded by `cost_guard.py`.

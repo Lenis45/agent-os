@@ -36,17 +36,19 @@ Amori AI-инфра — это локальная операционная си�
 | Контейнеры | 5/5 работают |
 | Dashboard | `http://localhost:8099` |
 | Pixel office | `http://localhost:5070` |
-| Тесты агентов | `158 passed` |
+| Тесты агентов | `182 passed` через `make test` |
 | Очередь задач | пустая на момент проверки |
-| Основная Groq-модель | `groq/openai/gpt-oss-120b` |
+| Основная локальная модель | `qwen3:1.7b`; vision: `qwen3-vl:2b` |
+| Сложные запросы | `amori-ai` → Codex или Claude Code через подписку |
 | Платный API | лимит 2500 RUB/мес, текущий paid spend 0.00 RUB |
 | Restore-test | проходит, бэкап восстановим |
 
 Зоны внимания:
 
 - `calendar_agent`: Google OAuth token протух (`invalid_grant`), нужна повторная авторизация.
-- DeepSeek/OpenModel отключён после HTTP 402; рабочая цепочка — Gemini → Groq.
-- После безопасной очистки Docker-образов свободно около 22 ГБ; doctor предупреждает
+- DeepSeek/Gemini/Groq отключены как token-API fallback; включаются только явно.
+- На 14.08 свободно менее 10 ГБ; это ниже рабочего запаса, новые модели и тяжёлые
+  Docker-образы устанавливать нельзя до очистки. Doctor предупреждает
   при снижении запаса ниже 15 ГБ.
 - В БД есть старые отчёты от июня с неподтверждёнными продуктовым claims; новые guardrails уже
   блокируют такие ответы.
@@ -86,7 +88,10 @@ flowchart TB
     end
 
     subgraph External["Внешние сервисы"]
-        LLM["Groq / DeepSeek / Ollama"]
+        Router["amori-ai<br/>локальная оценка сложности"]
+        Ollama["Ollama Mac<br/>Qwen3 / Qwen3-VL"]
+        Codex["Codex CLI<br/>код и выполнение"]
+        Claude["Claude Code<br/>архитектура и анализ"]
         Telegram["Telegram API"]
         Mail["IMAP / SMTP"]
         Calendar["Google Calendar"]
@@ -113,7 +118,10 @@ flowchart TB
     Personal --> Qdrant
     Personal --> Vault
     Customer --> Cust
-    AgentLayer --> LLM
+    AgentLayer --> Router
+    Router --> Ollama
+    Router --> Codex
+    Router --> Claude
     AgentLayer --> Telegram
     Personal --> Mail
     Personal --> Calendar

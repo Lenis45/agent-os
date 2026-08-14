@@ -9,12 +9,12 @@ CRM, support, knowledge management, monitoring, and backups.
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Groq](https://img.shields.io/badge/Groq-GPT_OSS_120B-F55036)
-![LLM failover](https://img.shields.io/badge/LLM-Gemini_3.6_%7C_Groq-1A73E8)
+![Ollama](https://img.shields.io/badge/Ollama-Qwen3_local-111111?logo=ollama&logoColor=white)
+![LLM routing](https://img.shields.io/badge/LLM-local_%E2%86%92_Codex_%7C_Claude-1A73E8)
 ![Qdrant](https://img.shields.io/badge/Qdrant-vector_memory-DC244C)
 ![Telegram](https://img.shields.io/badge/Telegram-operator_UI-26A5E4?logo=telegram&logoColor=white)
 ![launchd](https://img.shields.io/badge/launchd-macOS-999999?logo=apple&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-174_passed-2EA043)
+![Tests](https://img.shields.io/badge/tests-182_passed-2EA043)
 
 </div>
 
@@ -38,7 +38,7 @@ actions such as publishing or outbound communication.
 
 ## Current State Snapshot
 
-Last verified: **2026-08-13** on the local Mac host. See the factual
+Last verified: **2026-08-14** on the local Mac host. See the factual
 [system baseline](docs/SYSTEM_BASELINE_2026-08-12.md) and the current
 [automation and LLM efficiency plan](docs/AUTOMATION_AND_LLM_EFFICIENCY_PLAN_2026-08-13.md).
 
@@ -50,9 +50,9 @@ Last verified: **2026-08-13** on the local Mac host. See the factual
 | Pixel office | `http://localhost:5070` |
 | Agent dashboard status | 8/8 required agents available + 1 on-demand agent |
 | Queue | No active queued or failed tasks at last check |
-| Tests | `174 passed` in `agents/tests` |
-| Default Groq model | `groq/openai/gpt-oss-120b` |
-| Production LLM chain | Groq GPT OSS 120B primary; Gemini 3.6 Flash and Groq fallback |
+| Tests | `182 passed` through `make test` |
+| Local models | `qwen3:1.7b` text/router, `qwen3-vl:2b` vision, `amori-hermes:4b` Hermes profile |
+| Production LLM chain | local classifier/answer → Codex for code/actions → Claude for architecture/research |
 | Paid API budget | 2500 RUB cap, current paid spend shown as 0.00 RUB |
 | Security boundary | Core Docker loopback-only; remote dashboard API requires bearer auth |
 | Restore test | Passing weekly; latest backup restored into a disposable Postgres container |
@@ -62,11 +62,11 @@ Known operator items are documented instead of hidden:
 | Item | Why it matters | Current handling |
 |---|---|---|
 | Google Calendar token | `calendar_agent` cannot modify Calendar with expired OAuth | Agent fails closed; owner re-authorization is still required |
-| DeepSeek/OpenModel credit | Provider returns HTTP 402 | Disabled explicitly; Gemini/Groq handle production traffic |
+| Optional token APIs | Separate API billing is not desired | DeepSeek, Gemini and Groq fallback disabled by default |
 | Optional web proxies | Qwen/GLM/Kimi processes could be up while real generation failed | Autostart disabled until re-auth plus successful smoke-test |
 | Historical bad reports | Old June reports contain fake publication/product claims | New output contracts and tests block these patterns going forward |
 | Telegram network noise | VPN/TLS can produce isolated handshake/EOF timeouts | Alert requires three consecutive transient failures; bots recover automatically |
-| Disk headroom | About 20 GiB remains after runtime hardening | Doctor warns below 15 GiB; keep at least 15-20 GiB free |
+| Disk headroom | Less than 10 GiB remains after local model setup | Warning is active; restore at least 15-20 GiB before adding models/images |
 
 ---
 
@@ -129,10 +129,11 @@ flowchart TB
     end
 
     subgraph External["External systems"]
-        Groq["Groq<br/>GPT OSS 120B"]
-        OpenModel["OpenModel<br/>optional / credit-gated"]
-        Gemini["Gemini<br/>3.6 Flash fallback"]
-        Ollama["Ollama GPU node<br/>optional/local"]
+        Router["amori-ai<br/>local complexity classifier"]
+        Ollama["Ollama on Mac<br/>Qwen3 text + Qwen3-VL"]
+        Codex["Codex CLI<br/>ChatGPT subscription"]
+        Claude["Claude Code<br/>Claude subscription"]
+        OptionalAPI["Optional token APIs<br/>disabled by default"]
         Telegram["Telegram API"]
         Google["Google Calendar"]
         Mail["IMAP / SMTP"]
@@ -160,11 +161,12 @@ flowchart TB
     Scheduled --> Qdrant
     Scheduled --> Obsidian
 
-    Orchestrator --> Groq
-    Orchestrator -. disabled until funded .-> OpenModel
-    Orchestrator --> Gemini
-    Agents --> Groq
-    Agents --> Gemini
+    Orchestrator --> Router
+    Agents --> Router
+    Router --> Ollama
+    Router --> Codex
+    Router --> Claude
+    Router -. explicit opt-in only .-> OptionalAPI
     Agents --> Ollama
     Customer --> Telegram
     Scheduled --> Google
@@ -377,7 +379,7 @@ pip install -r requirements.txt
 cd mcp && python -m venv .venv && .venv/bin/pip install "mcp[cli]" psycopg2-binary python-dotenv
 
 # 4. Copy and fill env
-cp agents/.env.example agents/.env   # add your Groq key, Telegram token, etc.
+cp agents/.env.example agents/.env   # add Telegram/integration secrets; LLM API keys are optional
 
 # 5. Init databases
 cd agents && python ops_store.py
@@ -455,6 +457,7 @@ Cron:
 Important docs:
 
 - [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) — Russian operator guide.
+- [docs/SMART_MODEL_ROUTING_2026-08-14.md](docs/SMART_MODEL_ROUTING_2026-08-14.md) — local/subscription routing, privacy and verification.
 - [docs/SYSTEM_BASELINE_2026-08-12.md](docs/SYSTEM_BASELINE_2026-08-12.md) — verified system inventory, boundaries, and open items.
 - [docs/RUNBOOK.md](docs/RUNBOOK.md) — incident procedures.
 - [docs/INFRA.md](docs/INFRA.md) — infrastructure inventory.

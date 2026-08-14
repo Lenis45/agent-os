@@ -1,6 +1,6 @@
 # amori-infra — инвентарь (single source of truth)
 
-Последнее обновление: 2026-08-12 · хост: **Mac-mini.local** (прод-ядро, 24/7)
+Последнее обновление: 2026-08-14 · хост: **Mac-mini.local** (прод-ядро, 24/7)
 
 > Это краткий инвентарь. Полное проверенное состояние и известные ограничения:
 > [`SYSTEM_BASELINE_2026-08-12.md`](SYSTEM_BASELINE_2026-08-12.md).
@@ -47,7 +47,8 @@
 | calendar_agent / task_sync / lead_manager | cron | по расписанию | календарь, задачи и CRM-отчёты |
 
 ## Библиотеки (общие, не агенты)
-- `router.py` — выбор модели per-agent (Groq/Ollama) + бюджет-гард.
+- `router.py` — local-first выбор модели per-agent; внешние API только по opt-in.
+- `llm.py` — Ollama text/vision + bridge в `amori-ai` для Codex/Claude subscriptions.
 - `cost_guard.py` — учёт LLM-расходов + предохранитель платного API.
 - `tier1_log.py` — лог ручных Claude/GPT сессий.
 - `ops_store.py` — доступ к ops_db + heartbeat/runs.
@@ -55,23 +56,20 @@
 - `memory.py` — Qdrant + PG память.
 
 ## LLM / локальные модели
-- Production-цепочка API-моделей: Gemini 3.6 Flash → Groq GPT OSS 120B.
-- DeepSeek/OpenModel отключён через `OPENMODEL_ENABLED=0`, пока API отвечает HTTP 402.
-- Qwen/GLM/Kimi browser proxies исключены из production и отключены в launchd до
-  успешной повторной авторизации и real smoke-test.
-- Проверка Gemini выполняет короткую реальную генерацию выбранной моделью, а не только проверяет ключ.
-- Локальная GPU-нода: Windows `denis-k`, Ollama API через Tailscale IPv6:
-  `http://[fd7a:115c:a1e0::b43b:954]:11434`.
-- IPv4 `100.77.9.84:11434` может не работать на Mac при включённом VPN из-за конфликта
-  маршрута с Tailscale CGNAT `100.64.0.0/10`; поэтому в `agents/.env` используется IPv6 endpoint.
-- Требуемые Ollama-модели для локального роутинга:
-  - `qwen3.6:35b-a3b-q4_K_M` — приватный анализ: `task_sync`, `research_agent`, `content_agent`, `analyst_agent`;
-  - `qwen3.6:27b-q4_K_M` — локальный код: `code_agent`;
-  - `gemma4:12b-it-qat` — быстрый локальный чат/проверки через OpenCode.
-- Если API доступна, но нужных моделей нет, `router.py` не отдаёт несуществующую Ollama-модель,
-  а уводит задачу на Groq fallback.
-- Проверка с Mac:
-  `python3 ~/ai-infra/scripts/check_remote_ollama.py`.
+- Основной endpoint: Mac Ollama `http://127.0.0.1:11434`; Windows GPU-нода больше
+  не является обязательной для работоспособности агентов.
+- `qwen3:1.7b` — классификация сложности и быстрые текстовые ответы.
+- `qwen3-vl:2b` — локальный анализ изображений для Emilia.
+- `amori-hermes:4b` — отдельный Hermes-профиль; прямой быстрый чат идёт через
+  `amori-ai`, чтобы не загружать полный tool prompt Hermes на каждый простой вопрос.
+- `amori-ai`: local → Codex CLI для кода/действий → Claude Code для архитектуры,
+  требований, глубокого анализа и актуального research.
+- Codex и Claude используют OAuth существующих подписок. Это не отдельные API-вызовы,
+  но на них действуют лимиты соответствующих планов.
+- DeepSeek/OpenModel, Gemini, Groq и browser proxies отключены по умолчанию.
+  Внешний API-fallback возможен только при `ALLOW_EXTERNAL_LLM_FALLBACK=1`.
+- Windows Ollama/ComfyUI остаётся опциональной тяжёлой нодой; её проверяет
+  `python3 ~/ai-infra/scripts/check_remote_ollama.py`, но её выключение не роняет Mac-контур.
 
 ## Agent tooling / skills / MCP
 - Shared skills source: `~/.agents/skills` (17 личных skills Amori/Codex workflow).
@@ -103,7 +101,7 @@
 ```
 
 ## Секреты
-- `~/ai-infra/agents/.env` — все токены (TG, WEEEK, Groq, Gemini, Yandex, POSTGRES_PASSWORD).
+- `~/ai-infra/agents/.env` — интеграционные secrets (TG, WEEEK, Google, DB); LLM API keys optional/disabled.
   Права: должны быть `600`. Файлы `.en`/`.env.save` — мусор/бэкапы, проверить и удалить.
 - Compose получает пароли и encryption keys из untracked корневого `.env`; LaunchAgent
   plist не содержат токены. Следующий уровень — отдельный local secret backend.
