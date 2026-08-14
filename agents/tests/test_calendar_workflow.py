@@ -56,6 +56,41 @@ def test_orchestrator_routes_calendar_change_with_confirmation():
     assert decision["params"]["text"].startswith("перенеси")
 
 
+def test_model_cannot_route_document_followup_to_calendar(monkeypatch):
+    class Message:
+        content = '{"tool":"add_calendar_event","params":{"text":"по договору"}}'
+
+    class Choice:
+        message = Message()
+
+    class Result:
+        choices = [Choice()]
+
+    monkeypatch.setattr(orchestrator.llm, "groq_chat", lambda *_a, **_k: Result())
+
+    decision = orchestrator.orchestrate("Проанализируй файл и выпиши основное", [])
+
+    assert decision["tool"] == "answer"
+    assert decision["params"]["question"].startswith("Проанализируй")
+
+
+def test_question_about_calendar_does_not_mutate_calendar(monkeypatch):
+    class Message:
+        content = '{"tool":"change_calendar_event","params":{"text":"зачем"}}'
+
+    class Choice:
+        message = Message()
+
+    class Result:
+        choices = [Choice()]
+
+    monkeypatch.setattr(orchestrator.llm, "groq_chat", lambda *_a, **_k: Result())
+
+    decision = orchestrator.orchestrate("Зачем тебе календарь?", [])
+
+    assert decision["tool"] == "answer"
+
+
 def test_calendar_change_preview_updates_numbered_event(monkeypatch):
     monkeypatch.setattr(calendar_agent, "local_now", lambda: datetime(2026, 7, 18, 8, 30))
     events = [
