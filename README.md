@@ -51,7 +51,7 @@ Last verified: **2026-08-14** on the local Mac host. See the factual
 | Agent dashboard status | 8/8 required agents available + 1 on-demand agent |
 | Queue | No active queued or failed tasks at last check |
 | Tests | `182 passed` through `make test` |
-| Local models | `qwen3:1.7b` text/router, `qwen3-vl:2b` vision, `amori-hermes:4b` Hermes profile |
+| Local models | `qwen3:1.7b` router, `qwen3:4b` answers, `qwen3-vl:2b` vision, `amori-hermes:4b` Hermes profile |
 | Production LLM chain | local classifier/answer → Codex for code/actions → Claude for architecture/research |
 | Paid API budget | 2500 RUB cap, current paid spend shown as 0.00 RUB |
 | Security boundary | Core Docker loopback-only; remote dashboard API requires bearer auth |

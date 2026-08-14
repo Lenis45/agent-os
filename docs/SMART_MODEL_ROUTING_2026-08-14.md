@@ -12,7 +12,7 @@
 flowchart LR
     U["Telegram или terminal"] --> R["Qwen3 1.7B<br/>оценка сложности"]
     R --> G["Правила безопасности"]
-    G -->|"объяснить, сократить, черновик"| L["Ollama Mac<br/>локальный ответ"]
+    G -->|"объяснить, сократить, черновик"| L["Qwen3 4B<br/>локальный ответ"]
     G -->|"код, файлы, тесты, git"| C["Codex CLI<br/>ChatGPT OAuth"]
     G -->|"архитектура, требования, research"| A["Claude Code<br/>Claude.ai OAuth"]
     S["Shared skills"] --> H["Компактный handoff<br/>до 3 skills"]
@@ -25,7 +25,7 @@ flowchart LR
 | Слой | Реализация | Оплата | Назначение |
 |---|---|---|---|
 | Router | `qwen3:1.7b` в Ollama | нет | JSON-классификация + детерминированные guardrails |
-| Fast answer | `qwen3:1.7b` | нет | короткие вопросы, summary, rewrite, простой контент |
+| Fast answer | `qwen3:4b` | нет | короткие вопросы, summary, rewrite, простой контент |
 | Vision | `qwen3-vl:2b` | нет | фото и скриншоты в Emilia |
 | Hermes | `amori-hermes:4b` | нет | локальный Hermes-профиль и инструменты |
 | Code/execution | Codex CLI | существующая ChatGPT subscription | репозитории, команды, тесты, browser QA, git |
@@ -41,6 +41,10 @@ Hermes подключён к локальному endpoint и модели `amor
 он заметно медленнее прямого Ollama-вызова. Команда `amori-ai` использует тот же
 локальный контур напрямую для быстрых ответов, а Hermes остаётся доступен для
 ручных tool-сессий. Это функциональное разделение, а не незавершённая интеграция.
+
+Telegram-входом для умной маршрутизации служит Emilia. Отдельный Hermes Telegram
+gateway намеренно не использует токен Emilia: два polling-процесса с одним bot token
+конфликтуют. Для отдельного Hermes-бота потребуются отдельный bot token и allowlist.
 
 ## Правила выбора
 
@@ -60,7 +64,8 @@ workers формируют ответ/предложение и не получ�
 
 ## Экономия контекста
 
-1. В routing-модель отправляется не более 12 000 символов запроса.
+1. В routing-модель отправляется только вопрос пользователя, не более 12 000 символов;
+   системный контекст Amori получает уже выбранный backend.
 2. В subscription handoff передаётся не более 16 000 символов: начало задачи и
    последние факты сохраняются, середина явно помечается как сокращённая.
 3. Выбирается максимум три релевантных skills. Передаются имя, описание и путь,
@@ -113,14 +118,15 @@ allowance, поэтому его запускают только после ло
 
 | Проверка | Результат |
 |---|---|
-| Local text | ответ за 1,44 с |
+| Local text | `qwen3:4b`, контрольный ответ `2 часа = 120 минут` корректен |
 | Local vision | корректное описание тестового терминала за 19,09 с |
 | Simple routing | `hermes`, complexity `simple` |
 | Code routing | `codex`, skills `debugging`, `testing` |
 | Architecture routing | `claude`, complexity `complex` |
 | Codex auth | ChatGPT login обнаружен, реальный CLI-вызов проходит |
-| Claude status | Claude.ai Pro login обнаружен; live token требует повторного входа |
-| Router unit tests | 22 passed |
+| Claude status | Claude.ai Pro login и реальный `claude --print` проходят |
+| Emilia → Claude | живой архитектурный вопрос передан Claude и обработан |
+| Router unit tests | 23 passed |
 | Agent routing/contract tests | 74 passed |
 | Full agent suite | 182 passed |
 
@@ -128,9 +134,6 @@ allowance, поэтому его запускают только после ло
 
 - На Data volume осталось меньше 10 ГБ. До очистки нельзя устанавливать новые
   крупные модели или Docker-образы; рабочий запас должен быть минимум 15-20 ГБ.
-- Claude CLI показывает активную Pro-сессию, но реальный запрос ранее получил
-  revoked OAuth. Нужен `claude auth login`; автоматический маршрут пока завершает
-  такие задачи через Codex.
 - Локальная модель экономична и приватна, но не заменяет web research и глубокий
   архитектурный review. Quality eval нужно расширять на реальные обезличенные кейсы.
 - Hermes upstream doctor сообщает high advisories в build tooling web/TUI; основной
