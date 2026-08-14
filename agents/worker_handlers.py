@@ -7,11 +7,12 @@ worker_handlers — специализированные хендлеры вор
 Внешние интеграции, которых пока нет (честно помечено):
   - content_designer: реальной генерации картинок нет (ComfyUI на GPU-ноде offline /
     нет image-API) → выдаёт детальный визуальный бриф + готовый промпт для генератора.
-  - web_researcher: живого веб-поиска из агента нет (нужен search-API) → структурный
-    ресёрч из знаний модели с пометками «требует проверки живыми данными».
-  - dev_worker: реального редактирования репозитория нет (OpenCode/Aider не подключён) →
-    выдаёт код/решение/тесты текстом, готовые к применению.
+  - web_researcher и dev_worker передают сложные задачи в subscription-router. Он
+    выбирает Codex/Claude через существующие подписки, а простой запрос оставляет локально.
+  - Воркеры работают в режиме ответа: изменения файлов требуют отдельного подтверждения.
 """
+import os
+
 import llm
 import base_agent
 import ponytail
@@ -36,6 +37,14 @@ def _agent(key, role, goal):
 def _task_text(task):
     return (f"ЗАДАЧА: {task.get('title','')}\n\nОПИСАНИЕ:\n{task.get('spec') or '(не задано)'}"
             + base_agent.upstream_context(task))
+
+
+def _subscription_answer(prompt: str) -> str:
+    try:
+        return llm.smart_router_answer(prompt, cwd=os.path.dirname(os.path.dirname(__file__)))
+    except Exception as error:
+        print(f"[worker] smart router недоступен, использую local fallback: {error}")
+        return ""
 
 
 def _safe_content_fallback(task, error: Exception) -> str:
@@ -93,7 +102,7 @@ def web_researcher(task):
         "контекст → находки → гипотезы → выводы → рекомендации.")
     p = (f"{_task_text(task)}\n\nСделай структурный ресёрч-бриф (markdown). "
          "Где данные могут устаревать — помечай «⚠ требует проверки живыми данными».")
-    return str(llm.run(a, p, "web_researcher"))
+    return _subscription_answer(p) or str(llm.run(a, p, "web_researcher"))
 
 
 def dev_worker(task):
@@ -105,7 +114,7 @@ def dev_worker(task):
             "или «протестировал», если задача не содержит реального вывода инструмента."))
     p = (f"{_task_text(task)}\n\nВерни в markdown: 1) ПРЕДЛОЖЕННОЕ РЕШЕНИЕ, 2) код/диф в код-блоках, "
          "3) как проверить, 4) edge-cases. Явно пометь, что это предложение к применению.")
-    return str(llm.run(a, p, "dev_worker"))
+    return _subscription_answer(p) or str(llm.run(a, p, "dev_worker"))
 
 
 def ops_worker(task):

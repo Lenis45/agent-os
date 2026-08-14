@@ -10,6 +10,7 @@ import provider_health
 import router
 import task_sync
 import praisonaiagents
+from praisonaiagents.approval.registry import ApprovalRegistry
 
 
 # ── llm.parse_json ────────────────────────────────────────────────
@@ -203,6 +204,7 @@ def test_run_records_provider_usage_exposed_by_agent(monkeypatch):
 
 
 def test_groq_chat_returns_compatible_response_from_fallback(monkeypatch):
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", False)
     class Completions:
         @staticmethod
         def create(**_kwargs):
@@ -229,6 +231,7 @@ def test_groq_chat_returns_compatible_response_from_fallback(monkeypatch):
 
 
 def test_groq_chat_records_provider_cache_and_latency(monkeypatch):
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", False)
     recorded = {}
 
     class Details:
@@ -266,6 +269,7 @@ def test_groq_chat_records_provider_cache_and_latency(monkeypatch):
 
 
 def test_groq_chat_falls_back_when_provider_returns_reasoning_only(monkeypatch):
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", False)
     class Usage:
         prompt_tokens = 10
         completion_tokens = 10
@@ -337,6 +341,8 @@ def test_vision_skips_disabled_qwen_proxy(monkeypatch, tmp_path):
     image = tmp_path / "pixel.png"
     image.write_bytes(b"not-a-real-image")
     monkeypatch.setattr(llm, "FREEQWEN_ENABLED", False)
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", False)
+    monkeypatch.setattr(llm, "ALLOW_EXTERNAL_FALLBACK", True)
     monkeypatch.setattr(llm, "_freeqwen_chat", lambda *_args, **_kwargs: pytest.fail("Qwen must stay disabled"))
     monkeypatch.setattr(llm, "_groq_vision_analyze", lambda *_args, **_kwargs: "image understood")
     monkeypatch.setattr(llm, "_record", lambda *args, **kwargs: None)
@@ -379,14 +385,15 @@ def test_router_checks_ollama_tags_endpoint(monkeypatch):
         def read(self):
             return b'{"models":[{"name":"qwen3.6:35b-a3b-q4_K_M"}]}'
 
-    def fake_urlopen(url, timeout):
-        calls["url"] = url
-        calls["timeout"] = timeout
-        return FakeResponse()
+    class FakeOpener:
+        def open(self, request, timeout):
+            calls["url"] = request.full_url
+            calls["timeout"] = timeout
+            return FakeResponse()
 
     monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
     monkeypatch.setenv("OLLAMA_CHECK_TIMEOUT", "1.25")
-    monkeypatch.setattr(router.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(router.urllib.request, "build_opener", lambda *_args: FakeOpener())
     router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
 
     assert router._check_ollama() is True
@@ -406,12 +413,105 @@ def test_router_requires_selected_ollama_model(monkeypatch):
             return b'{"models":[]}'
 
     monkeypatch.setenv("OLLAMA_API_BASE", "http://example.local:11434")
-    monkeypatch.setattr(router.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    class FakeOpener:
+        def open(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(router.urllib.request, "build_opener", lambda *_args: FakeOpener())
     monkeypatch.setattr(router, "_model_overrides", lambda: {})
     router._ollama_cache.update({"models": set(), "ok": False, "ts": 0, "error": ""})
 
     assert router._check_ollama(required_model="qwen3.6:35b-a3b-q4_K_M") is False
-    assert router.get_model("task_sync") == router.DEFAULT_GROQ_LITELLM_MODEL
+    assert router.get_model("task_sync") == router.LOCAL_WORK_MODEL
+
+
+def test_local_first_chat_does_not_call_external_client(monkeypatch):
+    class Completions:
+        @staticmethod
+        def create(**_kwargs):
+            pytest.fail("external provider must not be called")
+
+    class Client:
+        class Chat:
+            completions = Completions()
+
+        chat = Chat()
+
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", True)
+    monkeypatch.setattr(
+        llm,
+        "_ollama_chat",
+        lambda *_args, **_kwargs: ("локальный ответ", {"prompt_tokens": 4, "completion_tokens": 2}),
+    )
+    monkeypatch.setattr(cost_guard, "record_usage", lambda *_args, **_kwargs: None)
+
+    response = llm.groq_chat(
+        Client(), "orchestrator", [{"role": "user", "content": "привет"}]
+    )
+
+    assert response.choices[0].message.content == "локальный ответ"
+
+
+def test_local_vision_prevents_external_fallback(monkeypatch, tmp_path):
+    image = tmp_path / "pixel.png"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", True)
+    monkeypatch.setattr(llm, "ALLOW_EXTERNAL_FALLBACK", False)
+    monkeypatch.setattr(
+        llm,
+        "_ollama_chat",
+        lambda *_args, **_kwargs: ("на изображении ошейник", {"prompt_tokens": 8, "completion_tokens": 4}),
+    )
+    monkeypatch.setattr(
+        llm,
+        "_groq_vision_analyze",
+        lambda *_args, **_kwargs: pytest.fail("external vision must not be called"),
+    )
+    monkeypatch.setattr(cost_guard, "record_usage", lambda *_args, **_kwargs: None)
+
+    assert llm.vision_analyze("Опиши", str(image)) == "на изображении ошейник"
+
+
+def test_praison_critical_approval_is_scoped_to_arguments_and_agent():
+    baseline = ApprovalRegistry._approval_cache_key(
+        "execute_command", {"command": "ls"}, "worker-a"
+    )
+
+    assert baseline != ApprovalRegistry._approval_cache_key(
+        "execute_command", {"command": "env"}, "worker-a"
+    )
+    assert baseline != ApprovalRegistry._approval_cache_key(
+        "execute_command", {"command": "ls"}, "worker-b"
+    )
+
+
+def test_smart_router_bounds_context_and_uses_configured_executable(monkeypatch, tmp_path):
+    executable = tmp_path / "amori-ai"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o700)
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = '{"answer": "готово"}'
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        return Completed()
+
+    monkeypatch.setattr(llm, "SMART_ROUTER_ENABLED", True)
+    monkeypatch.setattr(llm, "SMART_ROUTER_COMMAND", str(executable))
+    monkeypatch.setattr(llm, "SMART_ROUTER_MAX_CHARS", 1200)
+    monkeypatch.setattr(llm.subprocess, "run", fake_run)
+
+    result = llm.smart_router_answer("начало" + "x" * 3000 + "конец", cwd=str(tmp_path))
+
+    assert result == "готово"
+    assert captured["command"][0] == str(executable)
+    assert len(captured["command"][-1]) < 1300
+    assert "контекст сокращён" in captured["command"][-1]
+    assert captured["command"][-1].endswith("конец")
 
 
 def test_provider_health_reports_ollama_port_timeout(monkeypatch):
@@ -422,7 +522,7 @@ def test_provider_health_reports_ollama_port_timeout(monkeypatch):
 
     assert icon == "⚪"
     assert "порт недоступен" in status
-    assert "ollama serve" in fix
+    assert "brew services restart ollama" in fix
 
 
 def test_provider_health_reports_missing_ollama_models(monkeypatch):
@@ -453,6 +553,19 @@ def test_provider_health_accepts_gemini_as_working_brain():
     assert ok is True
     assert "Gemini" in summary
     assert "лежит" not in summary
+
+
+def test_provider_health_prefers_local_brain():
+    ok, summary = provider_health.brain_summary(
+        ("⏸", "disabled", ""),
+        ("⏸", "disabled", ""),
+        ("⏸", "disabled", ""),
+        ("🟢", "ok", ""),
+    )
+
+    assert ok is True
+    assert "Локальный мозг" in summary
+    assert "Codex/Claude" in summary
 
 
 # ── retry ─────────────────────────────────────────────────────────

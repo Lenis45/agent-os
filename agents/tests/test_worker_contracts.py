@@ -120,6 +120,43 @@ def test_dev_worker_contract_forbids_fake_applied_work():
     assert "ПРЕДЛОЖЕННОЕ РЕШЕНИЕ" in src
 
 
+def test_dev_worker_uses_subscription_router_before_local_fallback(monkeypatch):
+    monkeypatch.setattr(worker_handlers.llm, "smart_router_answer", lambda *_a, **_k: "точный handoff")
+    monkeypatch.setattr(
+        worker_handlers.llm,
+        "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("local fallback must not run")),
+    )
+
+    result = worker_handlers.dev_worker({"title": "Проверить API", "spec": "Найти ошибку"})
+
+    assert result == "точный handoff"
+
+
+def test_default_worker_falls_back_when_router_is_unavailable(monkeypatch):
+    monkeypatch.setattr(base_agent.llm, "smart_router_answer", lambda *_a, **_k: "")
+    monkeypatch.setattr(base_agent.llm, "build_agent", lambda *_a, **_k: object())
+    monkeypatch.setattr(base_agent.llm, "run", lambda *_a, **_k: "локальный резерв")
+
+    result = base_agent.default_handler({"title": "Сводка", "spec": "Коротко"})
+
+    assert result == "локальный резерв"
+
+
+def test_default_worker_falls_back_when_subscription_backend_fails(monkeypatch):
+    monkeypatch.setattr(
+        base_agent.llm,
+        "smart_router_answer",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("OAuth revoked")),
+    )
+    monkeypatch.setattr(base_agent.llm, "build_agent", lambda *_a, **_k: object())
+    monkeypatch.setattr(base_agent.llm, "run", lambda *_a, **_k: "локальный резерв")
+
+    result = base_agent.default_handler({"title": "Сводка", "spec": "Коротко"})
+
+    assert result == "локальный резерв"
+
+
 def test_report_audit_flags_fake_publication_and_product_claim():
     issues = audit_agent_outputs._hits("Пост опубликован. GPS показывает в реальном времени.")
     assert "unverified_external_action:published" in issues

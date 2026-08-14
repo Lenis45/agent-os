@@ -164,12 +164,12 @@ def check_gemini():
 
 
 def check_ollama():
-    base = os.getenv("OLLAMA_API_BASE", "http://[fd7a:115c:a1e0::b43b:954]:11434").rstrip("/")
+    base = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434").rstrip("/")
     required = [
         item.strip()
         for item in os.getenv(
             "OLLAMA_REQUIRED_MODELS",
-            "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b-q4_K_M,gemma4:12b-it-qat",
+            "qwen3:1.7b,qwen3-vl:2b",
         ).split(",")
         if item.strip()
     ]
@@ -179,8 +179,8 @@ def check_ollama():
             "⚪",
             f"порт недоступен ({tcp_status})",
             (
-                f"на ПК denis-k запусти `ollama serve`; проверь OLLAMA_HOST=0.0.0.0:11434 "
-                f"и Windows Firewall для Tailscale; затем: curl --max-time 5 {base}/api/tags"
+                f"запусти Ollama на Mac: `brew services restart ollama`; "
+                f"затем: curl --max-time 5 {base}/api/tags"
             ),
         )
     try:
@@ -200,17 +200,19 @@ def check_ollama():
                 return (
                     "⚠️",
                     f"API ok, но нет моделей: {', '.join(missing)}",
-                    f"на Windows выполни: {pulls}",
+                    f"выполни локально: {pulls}",
                 )
         if not installed:
-            return ("⚠️", "API ok, но список моделей пуст", "на Windows установи модель: ollama pull qwen3.6:35b-a3b-q4_K_M")
-        return ("🟢", "ok (ПК включён, модели есть)", "")
+            return ("⚠️", "API ok, но список моделей пуст", "установи модель: ollama pull qwen3:1.7b")
+        return ("🟢", "ok (Mac, обязательные модели есть)", "")
     except Exception as e:
         return ("🔴", str(e)[:45], f"TCP есть, но HTTP API не отвечает: {base}/api/tags")
 
 
-def brain_summary(deepseek, groq, gemini):
+def brain_summary(deepseek, groq, gemini, ollama=None):
     """Describe the first usable provider in the configured production chain."""
+    if ollama and ollama[0] == "🟢":
+        return True, "✅ Локальный мозг работает; сложные задачи маршрутизируются в Codex/Claude по подписке."
     for label, state in (
         ("DeepSeek", deepseek),
         ("Gemini", gemini),
@@ -225,32 +227,29 @@ def main():
     import datetime
     today = datetime.date.today().strftime("%d.%m.%Y")
 
-    ds = check_deepseek()
-    gr = check_groq()
-    gm = check_gemini()
+    external_enabled = os.getenv("ALLOW_EXTERNAL_LLM_FALLBACK", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    disabled = ("⏸", "отключён политикой local-first", "включать только при осознанной API-оплате")
+    ds = check_deepseek() if external_enabled else disabled
+    gr = check_groq() if external_enabled else disabled
+    gm = check_gemini() if external_enabled else disabled
     ol = check_ollama()
 
     L = [f"🩺 Здоровье LLM-провайдеров | {today}", ""]
-    L.append("━━━ ОСНОВНЫЕ (мозг/воркеры) ━━━")
-    L.append(f"{ds[0]} DeepSeek V4 Flash (OpenModel) — {ds[1]}   ← опциональный первый маршрут" + (f"\n   ↳ {ds[2]}" if ds[2] else ""))
-    L.append(f"{gm[0]} Gemini — {gm[1]}   ← первый API-фолбэк" + (f"\n   ↳ {gm[2]}" if gm[2] else ""))
-    L.append(f"{gr[0]} Groq (GPT OSS 120B) — {gr[1]}   ← второй API-фолбэк" + (f"\n   ↳ {gr[2]}" if gr[2] else ""))
+    L.append("━━━ ОСНОВНОЙ КОНТУР ━━━")
+    L.append(f"{ol[0]} Ollama/Qwen (Mac) — {ol[1]}" + (f"\n   ↳ {ol[2]}" if ol[2] else ""))
+    L.append("🧭 amori-ai — простые запросы локально; код → Codex; архитектура/анализ → Claude")
 
-    L.append("\n━━━ ОТКЛЮЧЕНЫ (опциональные, не используются) ━━━")
-    L.append("⏸ Qwen / GLM / Kimi — optional web-proxy выключены намеренно; чинить не нужно.")
+    L.append("\n━━━ ВНЕШНИЕ API (ОПЦИОНАЛЬНО) ━━━")
+    L.append(f"{ds[0]} DeepSeek/OpenModel — {ds[1]}")
+    L.append(f"{gm[0]} Gemini — {gm[1]}")
+    L.append(f"{gr[0]} Groq — {gr[1]}")
 
-    L.append("\n━━━ ЛОКАЛЬНЫЕ / ПРОЧЕЕ ━━━")
-    L.append(f"{ol[0]} Ollama/Gemma (ПК) — {ol[1]}" + (f"\n   ↳ {ol[2]}" if ol[2] else ""))
-
-    brain_ok, summary = brain_summary(ds, gr, gm)
+    brain_ok, summary = brain_summary(ds, gr, gm, ol)
     L.append("")
     L.append(summary)
-    L.append("ℹ️ DeepSeek/OpenModel зависит от кредита и лимитов. Qwen/GLM/Kimi выключены намеренно как optional web-proxy.")
-
-    L.append("\n━━━ ЧТО ЕЩЁ МОЖНО ПОДКЛЮЧИТЬ (нужен ключ) ━━━")
-    L.append("• Официальные API (стабильно): Anthropic Claude · OpenAI GPT · Google Gemini · DeepSeek official · OpenRouter (агрегатор 300+ моделей)")
-    L.append("• Через офиц. API без прокси: Qwen (DashScope) · GLM (Z.ai API) · Kimi (Moonshot)")
-    L.append("• Локально бесплатно: Ollama на ПК — любые open-модели (Gemma, Qwen, Llama, DeepSeek-distill)")
+    L.append("ℹ️ Codex и Claude используются через их CLI/OAuth; отдельные API-ключи не нужны.")
 
     report = "\n".join(L)
     print(report)

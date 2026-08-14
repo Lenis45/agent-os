@@ -36,20 +36,25 @@ def _model_overrides() -> dict:
 DEFAULT_GROQ_LITELLM_MODEL = os.getenv("FREE_FALLBACK_MODEL", "groq/openai/gpt-oss-120b")
 if DEFAULT_GROQ_LITELLM_MODEL == "groq/llama-3.3-70b-versatile":
     DEFAULT_GROQ_LITELLM_MODEL = "groq/openai/gpt-oss-120b"
+LOCAL_FAST_MODEL = os.getenv("LOCAL_FAST_MODEL", "ollama/qwen3:1.7b")
+LOCAL_WORK_MODEL = os.getenv("LOCAL_WORK_MODEL", "ollama/qwen3:1.7b")
+ALLOW_EXTERNAL_FALLBACK = os.getenv("ALLOW_EXTERNAL_LLM_FALLBACK", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Правила роутинга
-# Приватные данные и тяжёлый анализ → локально
-# Быстрые задачи и коммуникации → Groq
+# Регулярные фоновые задачи выполняются локально. Codex/Claude подключаются
+# отдельным subscription-router только для явных сложных пользовательских запросов.
 ROUTING = {
-    "chief_of_staff":     DEFAULT_GROQ_LITELLM_MODEL,      # читает TG — быстро нужно
-    "email_watchdog":     DEFAULT_GROQ_LITELLM_MODEL,      # почта — быстро
-    "knowledge_curator":  DEFAULT_GROQ_LITELLM_MODEL,      # сохранение заметок
-    "context_translator": DEFAULT_GROQ_LITELLM_MODEL,      # перевод задач — скорость важна
-    "task_sync":          "ollama/qwen3.6:35b-a3b-q4_K_M", # анализ задач — приватно
-    "research_agent":     "ollama/qwen3.6:35b-a3b-q4_K_M", # тяжёлый анализ — локально
-    "code_agent":         "ollama/qwen3.6:27b-q4_K_M",     # код — локально
-    "content_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M", # контент — локально
-    "analyst_agent":      "ollama/qwen3.6:35b-a3b-q4_K_M", # данные — приватно
+    "chief_of_staff":     LOCAL_WORK_MODEL,
+    "email_watchdog":     LOCAL_WORK_MODEL,
+    "knowledge_curator":  LOCAL_FAST_MODEL,
+    "context_translator": LOCAL_FAST_MODEL,
+    "task_sync":          LOCAL_WORK_MODEL,
+    "research_agent":     LOCAL_WORK_MODEL,
+    "code_agent":         LOCAL_WORK_MODEL,
+    "content_agent":      LOCAL_WORK_MODEL,
+    "analyst_agent":      LOCAL_WORK_MODEL,
 }
 
 def get_model(agent_name: str) -> str:
@@ -57,12 +62,20 @@ def get_model(agent_name: str) -> str:
     model = _model_overrides().get(agent_name) or ROUTING.get(agent_name, DEFAULT_GROQ_LITELLM_MODEL)
     model = DEPRECATED_MODEL_REPLACEMENTS.get(model, model)
 
-    # Если системник недоступен — fallback на Groq
+    # Не уходить во внешний API молча. Сначала пробуем малую локальную модель,
+    # внешний free-tier доступен только через явный opt-in в .env.
     if model.startswith("ollama"):
         required = model.split("/", 1)[1] if "/" in model else ""
         if not _check_ollama(required_model=required):
-            print(f"[Router] Ollama недоступен, fallback → Groq")
-            return DEFAULT_GROQ_LITELLM_MODEL
+            local_fallback = LOCAL_FAST_MODEL.split("/", 1)[1]
+            ok, models, error = _ollama_models()
+            if ok and local_fallback in models:
+                print(f"[Router] {required} недоступна, fallback → {LOCAL_FAST_MODEL}")
+                return LOCAL_FAST_MODEL
+            if ALLOW_EXTERNAL_FALLBACK:
+                print("[Router] Ollama недоступен, разрешённый fallback → Groq")
+                return DEFAULT_GROQ_LITELLM_MODEL
+            print(f"[Router] Ollama недоступен ({error}); внешний fallback запрещён")
 
     # Бюджет-гард: если модель платная (tier 2) и месячный лимит исчерпан —
     # cost_guard сам даунгрейднет на free tier. Для free/local моделей это no-op,
@@ -80,11 +93,10 @@ def _ollama_models(force: bool = False) -> tuple[bool, set[str], str]:
     if not force and now - _ollama_cache["ts"] < 20:
         return bool(_ollama_cache["ok"]), set(_ollama_cache["models"]), str(_ollama_cache["error"])
     try:
-        base = os.getenv("OLLAMA_API_BASE", "http://[fd7a:115c:a1e0::b43b:954]:11434").rstrip("/")
-        with urllib.request.urlopen(
-            base + "/api/tags",
-            timeout=float(os.getenv("OLLAMA_CHECK_TIMEOUT", "2.5")),
-        ) as resp:
+        base = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434").rstrip("/")
+        request = urllib.request.Request(base + "/api/tags")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=float(os.getenv("OLLAMA_CHECK_TIMEOUT", "2.5"))) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
         models = {
             str(item.get("name") or "").strip()
