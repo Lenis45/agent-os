@@ -28,7 +28,7 @@ def test_on_demand_agent_is_not_counted_as_required():
         projects=[],
         content=[],
         leads={"total": 0, "overdue": 0},
-        surfaces={"smm_factory": True, "pixel_office": True},
+        surfaces={"smm_factory": True, "pixel_office": True, "request_broker": True, "image_provider": True},
     )
 
     assert summary["counts"]["agents_up"] == 1
@@ -50,7 +50,7 @@ def test_health_surfaces_unavailable_llm_and_invalid_content_as_actions():
             {"id": 6, "status": "failed", "kind": "post", "body": "", "image_brief": ""},
         ],
         leads={"total": 14, "overdue": 14},
-        surfaces={"smm_factory": False, "pixel_office": True},
+        surfaces={"smm_factory": False, "pixel_office": True, "request_broker": False, "image_provider": False},
     )
 
     assert summary["status"] == "blocked"
@@ -61,6 +61,8 @@ def test_health_surfaces_unavailable_llm_and_invalid_content_as_actions():
         "lead_followup_overdue",
         "project_status_stale",
         "smm_factory_down",
+        "request_broker_down",
+        "image_provider_down",
     }
     lead_action = next(item for item in summary["actions"] if item["code"] == "lead_followup_overdue")
     assert lead_action["href"] == "https://t.me/Emilia_Orchestrator_bot"

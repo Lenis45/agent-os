@@ -212,6 +212,90 @@ CREATE TABLE IF NOT EXISTS content_items (
     meta         JSONB NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_content_status ON content_items (status, id);
+
+-- Unified Intelligence Gateway
+CREATE TABLE IF NOT EXISTS smart_requests (
+    id UUID PRIMARY KEY,
+    source TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source_message_id TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    prompt_text TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'ask',
+    cwd TEXT,
+    target_device TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'accepted',
+    route JSONB NOT NULL DEFAULT '{}',
+    input_artifact_ids JSONB NOT NULL DEFAULT '[]',
+    result_text TEXT,
+    evidence JSONB NOT NULL DEFAULT '[]',
+    error_code TEXT,
+    error_message TEXT,
+    parent_request_id UUID,
+    attempts SMALLINT NOT NULL DEFAULT 0,
+    leased_by TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+ALTER TABLE smart_requests ADD COLUMN IF NOT EXISTS input_artifact_ids JSONB NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_smart_requests_queue ON smart_requests (status, target_device, created_at);
+CREATE INDEX IF NOT EXISTS idx_smart_requests_session ON smart_requests (source, actor_id, session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS smart_request_events (
+    id BIGSERIAL PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES smart_requests(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    message TEXT,
+    progress SMALLINT,
+    meta JSONB NOT NULL DEFAULT '{}',
+    ts TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_smart_request_events ON smart_request_events (request_id, id);
+
+CREATE TABLE IF NOT EXISTS smart_artifacts (
+    id UUID PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES smart_requests(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'output',
+    original_name TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    meta JSONB NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_smart_artifacts_request ON smart_artifacts (request_id, created_at);
+
+CREATE TABLE IF NOT EXISTS smart_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES smart_requests(id) ON DELETE CASCADE,
+    artifact_id UUID,
+    destination TEXT NOT NULL,
+    external_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts SMALLINT NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS smart_workers (
+    worker_id TEXT PRIMARY KEY,
+    device TEXT NOT NULL,
+    capabilities JSONB NOT NULL DEFAULT '[]',
+    versions JSONB NOT NULL DEFAULT '{}',
+    auth_status JSONB NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'online',
+    active_request_id UUID,
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    meta JSONB NOT NULL DEFAULT '{}'
+);
 """
 
 DEFAULT_BUDGET = {

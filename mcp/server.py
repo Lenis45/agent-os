@@ -19,6 +19,8 @@ import json
 import datetime
 import subprocess
 import urllib.request
+import urllib.parse
+import time
 from decimal import Decimal
 
 from mcp.server.fastmcp import FastMCP
@@ -52,6 +54,8 @@ if os.getenv("OPS_DB_RO_USER"):
     PG_RO["password"] = os.getenv("OPS_DB_RO_PASSWORD")
 
 mcp = FastMCP("amori")
+BROKER = os.getenv("AMORI_BROKER_URL", "http://100.66.130.21:8110").rstrip("/")
+BROKER_TOKEN_FILE = os.path.expanduser("~/.config/amori/broker_token")
 
 
 def _jsonable(v):
@@ -93,6 +97,72 @@ def _run(*args, timeout=200) -> str:
     if r.returncode:
         out += "\n[stderr] " + (r.stderr or "").strip()[-600:]
     return out or "(нет вывода)"
+
+
+def _broker(method: str, path: str, payload=None, timeout=60) -> dict:
+    try:
+        with open(BROKER_TOKEN_FILE, encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError as error:
+        return {"error": f"broker token unavailable: {error}"}
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
+    request = urllib.request.Request(
+        BROKER + path, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
+            return json.load(response)
+    except Exception as error:
+        return {"error": str(error)[:400]}
+
+
+@mcp.tool()
+def smart_request(prompt: str, action: bool = False, session_id: str = "hermes") -> dict:
+    """Send a complete request to the unified local/Codex/Claude router. Use action=false
+    for questions and analysis. Use action=true only for an explicit user request to change
+    files or external state; the request will wait for a separate user confirmation."""
+    created = _broker("POST", "/v1/requests", {
+        "source": "hermes", "actor_id": "hermes-mcp", "session_id": session_id,
+        "source_message_id": f"{session_id}-{time.time_ns()}", "text": prompt,
+        "mode": "act" if action else "ask", "cwd": os.path.expanduser("~/ai-infra"),
+        "target_device": "auto", "artifact_ids": [],
+    })
+    request = created.get("request") or {}
+    request_id = str(request.get("id", ""))
+    if not request_id or "error" in created:
+        return created
+    if action:
+        return {"request_id": request_id, "status": request.get("status"), "message": "Требуется подтверждение пользователя через smart_confirm."}
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        result = _broker("GET", f"/v1/requests/{request_id}")
+        state = (result.get("request") or {}).get("status")
+        if state in {"completed", "partial", "failed", "cancelled"}:
+            return result
+        time.sleep(1.5)
+    return {"request_id": request_id, "status": "running", "message": "Проверь позже через smart_status."}
+
+
+@mcp.tool()
+def smart_confirm(request_id: str, confirmation: str) -> dict:
+    """Confirm a pending action only after the user explicitly answered ДА."""
+    if confirmation.strip().lower() not in {"да", "yes", "confirm"}:
+        return {"confirmed": False, "error": "Explicit confirmation ДА is required"}
+    return _broker("POST", f"/v1/requests/{urllib.parse.quote(request_id)}/confirm", {"actor_id": "hermes-mcp"})
+
+
+@mcp.tool()
+def smart_status(request_id: str) -> dict:
+    """Get execution status, selected model, events, result, and output artifacts."""
+    return _broker("GET", f"/v1/requests/{urllib.parse.quote(request_id)}")
+
+
+@mcp.tool()
+def smart_cancel(request_id: str) -> dict:
+    """Cancel a queued or running unified gateway request."""
+    return _broker("POST", f"/v1/requests/{urllib.parse.quote(request_id)}/cancel", {})
 
 
 # ─────────── Проекты и задачи AI-команды ───────────

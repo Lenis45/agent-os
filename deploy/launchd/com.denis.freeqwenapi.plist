@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.denis.freeqwenapi</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/denis/.local/bin/node</string>
+    <string>/Users/denis/ai-infra/FreeQwenApi/index.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/denis/ai-infra/FreeQwenApi</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOST</key><string>127.0.0.1</string>
+    <key>PORT</key><string>3264</string>
+    <key>NON_INTERACTIVE</key><string>1</string>
+    <key>DEFAULT_MODEL</key><string>qwen3.7-max</string>
+    <key>QWEN_WEB_VERSION</key><string>0.2.66</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/denis/ai-infra/FreeQwenApi/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/denis/ai-infra/FreeQwenApi/logs/launchd.err.log</string>
+</dict>
+</plist>

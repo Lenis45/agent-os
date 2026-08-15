@@ -8,7 +8,7 @@ ops_db.llm_usage, Tier-1 сессии, прогоны backup/monitor/restore_tes
 
 Запуск: /opt/anaconda3/bin/python3 ~/ai-infra/dashboard/server.py  → http://localhost:8099
 """
-import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac, ipaddress
+import json, subprocess, urllib.request, os, time, threading, concurrent.futures, hmac, ipaddress, re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import datetime
@@ -226,6 +226,19 @@ def http_ok(url):
         return False
 
 
+def qwen_image_ok():
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        request = urllib.request.Request("http://127.0.0.1:3264/api/status")
+        with opener.open(request, timeout=8) as response:
+            payload = json.load(response)
+        return bool(payload.get("authenticated")) and any(
+            item.get("status") == "OK" for item in payload.get("accounts", [])
+        )
+    except Exception:
+        return False
+
+
 def agents_state(usage_by_agent):
     out = []
     for key, name, sched, typ, contour, label in AGENTS:
@@ -278,7 +291,20 @@ def build_state():
         f_surfaces = ex.submit(lambda: {
             "smm_factory": http_ok("http://127.0.0.1:8180/health"),
             "pixel_office": http_ok("http://127.0.0.1:5070/"),
+            "request_broker": http_ok("http://100.66.130.21:8110/health"),
+            "image_provider": qwen_image_ok(),
         })
+        f_smart_requests = ex.submit(psql_json, "ops_db",
+            "SELECT id::text, source, status, mode, target_device, "
+            "COALESCE(route->>'execution_handler', route->>'provider', 'auto') executor, "
+            "left(prompt_text,160) prompt, error_message, "
+            "to_char(created_at,'MM-DD HH24:MI') created, "
+            "to_char(updated_at,'MM-DD HH24:MI') updated FROM smart_requests "
+            "ORDER BY created_at DESC LIMIT 50")
+        f_smart_workers = ex.submit(psql_json, "ops_db",
+            "SELECT worker_id, device, capabilities, auth_status, active_request_id::text, "
+            "CASE WHEN last_seen > now()-interval '45 seconds' THEN 'online' ELSE 'offline' END status, "
+            "to_char(last_seen,'MM-DD HH24:MI:SS') seen FROM smart_workers ORDER BY device, worker_id")
         f_projects = ex.submit(psql_json, "ops_db",
             "SELECT p.id, p.name, p.domain, p.status stored_status, "
             "CASE WHEN count(t.*)>0 AND count(t.*) FILTER (WHERE t.status='done')=count(t.*) "
@@ -384,6 +410,7 @@ def build_state():
         "legacy_reports": int(legacy_reports_row[0] if legacy_reports_row else 0),
         "registry": f_registry.result(), "tasks": f_tasks.result(),
         "content": content, "leads": leads, "surfaces": surfaces, "health": health,
+        "smart_requests": f_smart_requests.result(), "smart_workers": f_smart_workers.result(),
         "model_choices": MODEL_CHOICES,
     }
 
@@ -566,6 +593,20 @@ class H(BaseHTTPRequestHandler):
                 ok = psql_exec("ops_db",
                     "UPDATE budget_config SET value=%s WHERE key='monthly_paid_cap_rub'", (str(cap),))
                 return self._send(200 if ok else 500, json.dumps({"ok": ok, "cap": cap}))
+            elif self.path.startswith("/api/requests/cancel"):
+                request_id = str(body.get("id", "")).strip()
+                if not re.fullmatch(r"[0-9a-f-]{36}", request_id):
+                    return self._send(400, json.dumps({"error": "bad request id"}))
+                ok = psql_exec("ops_db", """
+                    WITH changed AS (
+                      UPDATE smart_requests SET status='cancelled', finished_at=now(), updated_at=now()
+                      WHERE id=%s::uuid AND status NOT IN ('completed','partial','failed','cancelled')
+                      RETURNING id
+                    )
+                    INSERT INTO smart_request_events(request_id,stage,message,progress)
+                    SELECT id,'cancelled','Отменено из Request Center',100 FROM changed
+                """, (request_id,))
+                return self._send(200 if ok else 500, json.dumps({"ok": ok, "id": request_id}))
             return self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:
             return self._send(500, json.dumps({"error": str(e)}))
