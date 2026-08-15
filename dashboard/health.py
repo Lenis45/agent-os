@@ -46,6 +46,20 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, surfa
             "content", "http://localhost:8180",
         ))
 
+    if surfaces.get("request_broker") is False:
+        actions.append(_action(
+            "request_broker_down", "critical", "Единый AI-шлюз недоступен",
+            "Emilia, Hermes, OpenCode и терминал не смогут передавать запросы исполнителям.",
+            "system",
+        ))
+
+    if surfaces.get("image_provider") is False:
+        actions.append(_action(
+            "image_provider_down", "warning", "Автогенерация изображений недоступна",
+            "Повторно авторизуйте локальный Qwen-контур; текстовые запросы продолжат работать.",
+            "system",
+        ))
+
     down_containers = [name for name, running in containers.items() if not running]
     if down_containers:
         actions.append(_action(
