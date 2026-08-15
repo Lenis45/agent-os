@@ -18,12 +18,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import artifact_store
+from document_pipeline import extract_document
 import ops_store
 import request_store
 
 
 APP_VERSION = "2.0.0"
 TOKEN_FILE = Path.home() / ".config" / "amori" / "broker_token"
+MAX_UPLOAD_BYTES = int(os.getenv("AMORI_BROKER_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 
 
 class RequestCreate(BaseModel):
@@ -135,6 +137,7 @@ def _target_device(payload: RequestCreate, route: dict) -> str:
 
 def submit(payload: RequestCreate) -> tuple[dict, bool]:
     route = route_prompt(payload.text, payload.mode)
+    target_device = _target_device(payload, route)
     request, created = request_store.create_request(
         source=payload.source,
         actor_id=payload.actor_id,
@@ -144,7 +147,7 @@ def submit(payload: RequestCreate) -> tuple[dict, bool]:
         idempotency_key=_idempotency_key(payload),
         source_message_id=payload.source_message_id,
         cwd=payload.cwd,
-        target_device=_target_device(payload, route),
+        target_device=target_device,
         route=route,
         input_artifact_ids=payload.artifact_ids,
     )
@@ -153,6 +156,13 @@ def submit(payload: RequestCreate) -> tuple[dict, bool]:
         request_store.append_event(
             str(request["id"]), "awaiting_confirmation",
             "Требуется подтверждение действия", 20,
+        )
+        request = request_store.get_request(str(request["id"]))
+    elif created and not request_store.worker_available(target_device):
+        request_store.set_status(str(request["id"]), "waiting_for_device")
+        request_store.append_event(
+            str(request["id"]), "waiting_for_device",
+            f"Ожидается исполнитель на {target_device}", 20,
         )
         request = request_store.get_request(str(request["id"]))
     return request, created
@@ -171,6 +181,38 @@ def _public_artifact(artifact: dict) -> dict:
     public = {key: value for key, value in artifact.items() if key != "stored_path"}
     public["download_url"] = f"/v1/artifacts/{artifact['id']}/download"
     return public
+
+
+async def _store_upload(file: UploadFile, owner_id: str, *, source: str, kind: str) -> dict:
+    suffix = Path(file.filename or "artifact.bin").suffix
+    size = 0
+    temporary_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
+            temporary_path = temporary.name
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Artifact is too large")
+                temporary.write(chunk)
+        artifact = artifact_store.store_file(
+            temporary_path, file.filename or "artifact.bin", owner_id,
+            source=source, kind=kind,
+        )
+        if kind == "input":
+            extraction = extract_document(artifact.stored_path)
+            if extraction.ok:
+                artifact = artifact_store.attach_extracted_text(artifact, extraction.text)
+        return artifact.to_dict()
+    finally:
+        if temporary_path:
+            Path(temporary_path).unlink(missing_ok=True)
+
+
+@app.post("/v1/uploads", dependencies=[Depends(require_bearer)])
+async def upload_input(owner_id: str, file: UploadFile = File(...)) -> dict:
+    artifact = await _store_upload(file, owner_id, source="broker-upload", kind="input")
+    return {"artifact": {key: value for key, value in artifact.items() if key != "stored_path"}}
 
 
 @app.get("/health")
@@ -273,16 +315,8 @@ async def worker_artifact(request_id: str, owner_id: str, kind: str = "output", 
     request = request_store.get_request(request_id)
     if not request:
         raise HTTPException(status_code=404, detail="Request not found")
-    suffix = Path(file.filename or "artifact.bin").suffix
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
-        temporary.write(await file.read())
-        temporary_path = temporary.name
-    try:
-        artifact = artifact_store.store_file(
-            temporary_path, file.filename or "artifact.bin", owner_id,
-            source="worker", kind=kind,
-        )
-        request_store.register_artifact(request_id, artifact.to_dict())
-        return {"artifact": _public_artifact(artifact.to_dict())}
-    finally:
-        Path(temporary_path).unlink(missing_ok=True)
+    if owner_id != str(request["actor_id"]):
+        raise HTTPException(status_code=403, detail="Artifact owner does not match request owner")
+    artifact = await _store_upload(file, owner_id, source="worker", kind=kind)
+    request_store.register_artifact(request_id, artifact)
+    return {"artifact": _public_artifact(artifact)}

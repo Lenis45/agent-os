@@ -12,6 +12,7 @@ import ops_store
 
 
 TERMINAL_STATUSES = {"completed", "partial", "failed", "cancelled"}
+WORKER_FRESHNESS_SECONDS = 45
 
 
 def _json(value: Any) -> str:
@@ -160,6 +161,25 @@ def heartbeat_worker(
         conn.close()
 
 
+def worker_available(device: str) -> bool:
+    """Return whether a fresh worker can accept work for the target device."""
+    conn = ops_store.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT EXISTS(
+                   SELECT 1 FROM smart_workers
+                   WHERE status='online'
+                     AND last_seen > now()-(%s * interval '1 second')
+                     AND device IN ('auto','current',%s)
+               )""",
+            (WORKER_FRESHNESS_SECONDS, device),
+        )
+        return bool(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
 def renew_lease(worker_id: str, request_id: str) -> bool:
     conn = ops_store.get_conn()
     try:
@@ -292,9 +312,16 @@ def confirm_request(request_id: str, actor_id: str) -> bool:
     try:
         cur = conn.cursor()
         cur.execute(
-            """UPDATE smart_requests SET status='queued', updated_at=now()
+            """UPDATE smart_requests SET status=CASE
+                   WHEN EXISTS (
+                       SELECT 1 FROM smart_workers
+                       WHERE status='online'
+                         AND last_seen > now()-(%s * interval '1 second')
+                         AND device IN ('auto','current',smart_requests.target_device)
+                   ) THEN 'queued' ELSE 'waiting_for_device' END,
+                   updated_at=now()
                WHERE id=%s AND actor_id=%s AND status='awaiting_confirmation'""",
-            (request_id, actor_id),
+            (WORKER_FRESHNESS_SECONDS, request_id, actor_id),
         )
         changed = cur.rowcount > 0
         conn.commit()

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.request-broker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/denis/ai-infra/.venv/bin/python</string>
+    <string>/Users/denis/ai-infra/agents/run_request_broker.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/denis/ai-infra/agents</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/denis/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>AMORI_BROKER_HOST</key>
+    <string>100.66.130.21</string>
+    <key>AMORI_BROKER_PORT</key>
+    <string>8110</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/denis/ai-infra/agents/runtime/request-broker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/denis/ai-infra/agents/runtime/request-broker.log</string>
+</dict>
+</plist>
