@@ -154,6 +154,42 @@ def test_worker_runtime_info_is_cached(monkeypatch):
     assert calls == ["codex", "claude"]
 
 
+def test_document_text_is_embedded_and_refusal_falls_back(monkeypatch, tmp_path):
+    extracted = tmp_path / "extracted.txt"
+    extracted.write_text("Project codename: ORCHID-742", encoding="utf-8")
+    artifact = SimpleNamespace(
+        owner="denis",
+        original_name="brief.txt",
+        extracted_text_path=str(extracted),
+    )
+    calls = []
+
+    def fake_model_call(provider, prompt, _request, _cwd):
+        calls.append((provider, prompt))
+        if provider == "hermes":
+            return "Не могу прочитать вложение, передайте данные Codex.", []
+        return "ORCHID-742", [{"type": "model_result", "provider": provider}]
+
+    monkeypatch.setattr(broker_worker.artifact_store, "get_artifact", lambda _artifact_id: artifact)
+    monkeypatch.setattr(broker_worker, "_model_call", fake_model_call)
+    monkeypatch.setattr(broker_worker.request_store, "append_event", lambda *_args: None)
+
+    answer, evidence = broker_worker._router_call({
+        "id": "request-1",
+        "actor_id": "denis",
+        "prompt_text": "Верни полный код",
+        "input_artifact_ids": ["artifact-1"],
+        "cwd": str(tmp_path),
+        "route": {"provider": "hermes"},
+    })
+
+    assert answer == "ORCHID-742"
+    assert [provider for provider, _prompt in calls] == ["hermes", "claude"]
+    assert "извлечённый текст файлов" in calls[0][1]
+    assert "Project codename: ORCHID-742" in calls[0][1]
+    assert any(item["type"] == "model_fallback" for item in evidence)
+
+
 def test_explicit_side_effect_requires_action_mode():
     assert orchestrator.infer_request_mode("Проанализируй договор и выпиши риски") == "ask"
     assert orchestrator.infer_request_mode("Добавь встречу завтра в 10:00") == "act"
