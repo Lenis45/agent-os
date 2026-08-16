@@ -5,6 +5,12 @@ def configure_state(monkeypatch, tmp_path):
     monkeypatch.setattr(infra_monitor, "TELEGRAM_STATE_FILE", str(tmp_path / "telegram.json"))
 
 
+def configure_alert_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(infra_monitor, "ALERT_STATE_FILE", str(tmp_path / "infra-alert.json"))
+    monkeypatch.setattr(infra_monitor, "ALERT_REPEAT_HOURS", 6)
+    monkeypatch.setenv("INFRA_MONITOR_SOURCE", "test-mac-mini")
+
+
 def test_telegram_check_reports_one_grouped_hard_warning(monkeypatch, tmp_path):
     infra_monitor.ok.clear()
     infra_monitor.warn.clear()
@@ -160,3 +166,66 @@ def test_weekly_digest_includes_llm_usage(monkeypatch):
     infra_monitor.run_digest()
 
     assert sent and "LLM за 7д: 12 выз., 3 456 токенов" in sent[0]
+
+
+def test_monitor_alert_identifies_source_and_suppresses_duplicate(monkeypatch, tmp_path):
+    configure_alert_state(monkeypatch, tmp_path)
+    infra_monitor.crit[:] = ["❌ контейнер ai_redis не запущен"]
+    infra_monitor.warn.clear()
+    infra_monitor.ok[:] = ["container ai_postgres"]
+    sent = []
+    monkeypatch.setattr(
+        infra_monitor.notify,
+        "send",
+        lambda message, level: sent.append((message, level)),
+    )
+
+    first = infra_monitor.notify_monitor_state("16.08 04:00", now_ts=1000)
+    duplicate = infra_monitor.notify_monitor_state("16.08 05:00", now_ts=2000)
+
+    assert first == "sent"
+    assert duplicate == "suppressed"
+    assert len(sent) == 1
+    assert "Источник: test-mac-mini · ai.monitor v3.1" in sent[0][0]
+    assert sent[0][1] == "crit"
+
+
+def test_monitor_changed_alert_bypasses_cooldown(monkeypatch, tmp_path):
+    configure_alert_state(monkeypatch, tmp_path)
+    infra_monitor.warn.clear()
+    infra_monitor.ok.clear()
+    sent = []
+    monkeypatch.setattr(infra_monitor.notify, "send", lambda message, level: sent.append(message))
+
+    infra_monitor.crit[:] = ["❌ контейнер ai_redis не запущен"]
+    infra_monitor.notify_monitor_state(now_ts=1000)
+    infra_monitor.crit[:] = ["❌ контейнер ai_postgres не запущен"]
+    result = infra_monitor.notify_monitor_state(now_ts=1100)
+
+    assert result == "sent"
+    assert len(sent) == 2
+
+
+def test_monitor_sends_one_recovery_message(monkeypatch, tmp_path):
+    configure_alert_state(monkeypatch, tmp_path)
+    infra_monitor.crit[:] = ["❌ Qdrant недоступен"]
+    infra_monitor.warn.clear()
+    infra_monitor.ok.clear()
+    sent = []
+    monkeypatch.setattr(
+        infra_monitor.notify,
+        "send",
+        lambda message, level: sent.append((message, level)),
+    )
+
+    infra_monitor.notify_monitor_state(now_ts=1000)
+    infra_monitor.crit.clear()
+    infra_monitor.ok[:] = ["container ai_qdrant", "http Qdrant"]
+    recovered = infra_monitor.notify_monitor_state(now_ts=1200)
+    repeated_ok = infra_monitor.notify_monitor_state(now_ts=1300)
+
+    assert recovered == "recovered"
+    assert repeated_ok == "none"
+    assert len(sent) == 2
+    assert "Система восстановлена" in sent[1][0]
+    assert sent[1][1] == "ok"
