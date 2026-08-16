@@ -1,6 +1,6 @@
 # amori-infra — инвентарь (single source of truth)
 
-Последнее обновление: 2026-08-14 · хост: **Mac-mini.local** (прод-ядро, 24/7)
+Последнее обновление: 2026-08-16 · хост: **Mac-mini.local** (прод-ядро, 24/7)
 
 > Это краткий инвентарь. Полное проверенное состояние и известные ограничения:
 > [`SYSTEM_BASELINE_2026-08-12.md`](SYSTEM_BASELINE_2026-08-12.md).
@@ -10,8 +10,13 @@
 |---|---|---|
 | mac-mini (этот) | 100.66.130.21 | прод-ядро: Docker, агенты, n8n, бэкап |
 | denis-k | 100.77.9.84 / fd7a:115c:a1e0::b43b:954 | GPU-нода: Ollama (:11434), ComfyUI (:8188) |
-| macbook-air | 100.90.154.18 | workstation |
+| macbook-1 | 100.95.200.39 / fd7a:115c:a1e0::aa3b:c828 | workstation; SSH работает по Tailscale IPv6 |
+| msi | 100.90.154.18 | дополнительная Windows-нода |
 | One Touch (USB) | — | внешний 1TB exFAT, off-site бэкап (`/Volumes/One Touch/amori-backups`) |
+
+MacBook не запускает production-агентов. Устаревшая копия от мая-июля 2026 года,
+которая дублировала Telegram-ботов и отправляла ложный `Health Check`, отключена
+16.08.2026 и сохранена локально как `~/ai-infra.disabled-legacy-20260816`.
 
 ## Docker-контейнеры (`~/ai-infra/docker-compose.yml`)
 | Контейнер | Образ | Порт | Назначение |
