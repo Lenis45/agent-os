@@ -40,7 +40,7 @@
 | knowledge_curator | knowledge.curator | 24/7 | Obsidian vault, переводы |
 | chief_of_staff | chief.of.staff | 9:00, 19:00 | дайджест команды из TG |
 | email_watchdog | email.watchdog | 8:00 | IMAP → важное → Obsidian |
-| **infra_monitor** (NEW) | ai.monitor | ежечасно | мониторинг всей инфры → Telegram при проблемах |
+| **infra_monitor** | ai.monitor | ежечасно в `:07` | мониторинг → Telegram; подпись хоста, дедупликация 6ч, recovery |
 | **backup** (NEW) | amori.backup | 4:00 | бэкап + off-site + ротация логов |
 | **restore_test** | ai.restoretest | Сб 5:00 | еженедельная проверка восстановимости бэкапа |
 | **digest** (NEW) | ai.digest | Пн 9:00 | еженедельная сводка инфры |
@@ -68,6 +68,9 @@
   но на них действуют лимиты соответствующих планов.
 - DeepSeek/OpenModel, Gemini, Groq и browser proxies отключены по умолчанию.
   Внешний API-fallback возможен только при `ALLOW_EXTERNAL_LLM_FALLBACK=1`.
+- Groq text fallback: `openai/gpt-oss-120b`. Удалённый
+  `llama-3.3-70b-versatile` принимается только как legacy-настройка и автоматически
+  нормализуется в актуальную модель.
 - Windows Ollama/ComfyUI остаётся опциональной тяжёлой нодой; её проверяет
   `python3 ~/ai-infra/scripts/check_remote_ollama.py`, но её выключение не роняет Mac-контур.
 

@@ -23,6 +23,12 @@ load_dotenv(os.path.join(HERE, ".env"))
 import notify      # noqa: E402
 import ops_store   # noqa: E402
 
+GROQ_REPLACEMENT_MODEL = "openai/gpt-oss-120b"
+GROQ_RETIRED_MODELS = {
+    "llama-3.3-70b-versatile",
+    "groq/llama-3.3-70b-versatile",
+}
+
 
 def _request(method, url, headers, timeout, body=None, attempts=3):
     import requests
@@ -91,9 +97,43 @@ def check_groq():
     key = os.getenv("GROQ_API_KEY")
     if not key:
         return ("⚪", "не настроен", "добавь GROQ_API_KEY в agents/.env")
+    configured = os.getenv("DEFAULT_GROQ_MODEL", GROQ_REPLACEMENT_MODEL).strip()
+    model = GROQ_REPLACEMENT_MODEL if configured in GROQ_RETIRED_MODELS else configured.removeprefix("groq/")
     try:
-        r = _get("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {key}"}, 10)
-        return ("🟢", "ok", "") if r.status_code == 200 else ("🔴", f"HTTP {r.status_code}", "проверь ключ/лимит Groq")
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        models_response = _get("https://api.groq.com/openai/v1/models", headers, 10)
+        if models_response.status_code != 200:
+            return ("🔴", f"HTTP {models_response.status_code}", "проверь ключ/лимит Groq")
+        available = {
+            str(item.get("id") or "")
+            for item in models_response.json().get("data", [])
+            if isinstance(item, dict)
+        }
+        if model not in available:
+            return (
+                "🔴",
+                f"модель {model} недоступна",
+                f"установи DEFAULT_GROQ_MODEL={GROQ_REPLACEMENT_MODEL}",
+            )
+
+        completion = _post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers,
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with OK only."}],
+                "temperature": 0,
+                "max_completion_tokens": 128,
+            },
+            25,
+        )
+        if completion.status_code == 200 and completion.json().get("choices"):
+            return ("🟢", f"ok ({model})", "")
+        return (
+            "🔴",
+            f"completion HTTP {completion.status_code} ({model})",
+            "проверь доступ модели и лимит Groq",
+        )
     except Exception as e:
         return ("🔴", str(e)[:45], "сеть до api.groq.com")
 

@@ -28,6 +28,34 @@ cd ~/ai-infra && docker compose up -d            # поднять всё
 docker logs <ai_postgres|ai_n8n|...> --tail 50   # если падает — смотреть логи
 ```
 
+Новый алерт всегда содержит строку `Источник: <host> · ai.monitor v3.1` и не
+повторяет одинаковую ошибку чаще одного раза в 6 часов. Старый шаблон
+`🚨 Health Check ... Проверь агентов на Mac Mini!` текущим кодом не отправляется.
+Если он снова появился, работает забытая копия со старым Telegram-токеном на другом
+хосте. Проверь cron/launchd на доступных машинах; если источник недоступен, отзови
+токен нужного бота через BotFather и обнови его только в `agents/.env` Mac Mini.
+
+Текущий монитор запускается в `:07`, чтобы не пересекаться с бэкапом в `04:00`:
+```bash
+plutil -p ~/Library/LaunchAgents/ai.monitor.plist
+launchctl print gui/$UID/ai.monitor | grep -E 'path|state|runs'
+tail -30 ~/ai-infra/agents/monitor.log
+```
+
+## Groq сообщил об удалении Llama 3.3 70B
+
+Production replacement: `openai/gpt-oss-120b`; запасной вариант для отдельных
+сценариев — `qwen/qwen3.6-27b`. Активная конфигурация не должна содержать старую
+модель:
+
+```bash
+rg '^DEFAULT_GROQ_MODEL=' ~/ai-infra/agents/.env
+cd ~/ai-infra && .venv/bin/python -c 'import sys; sys.path.insert(0,"agents"); import provider_health; print(provider_health.check_groq())'
+```
+
+Groq остаётся opt-in fallback. При `ALLOW_EXTERNAL_LLM_FALLBACK=0` локальные агенты
+его не вызывают, но ручной health-check всё равно позволяет проверить ключ и модель.
+
 ## Алерт «мало места» / диск заполнен (РИСК: Docker зависает при ~98%)
 ```bash
 df -h ~                                            # реальное место (Data-том, НЕ df /)

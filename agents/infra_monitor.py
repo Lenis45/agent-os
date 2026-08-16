@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-infra_monitor — комплексный монитор AI-инфры (v3.0). Новый агент автоматизации.
+infra_monitor — комплексный монитор AI-инфры (v3.1). Новый агент автоматизации.
 
 Заменяет health_check.py (который не был в расписании и содержал мёртвый код).
 Покрывает максимум сценариев и алертит в Telegram ТОЛЬКО при проблемах
@@ -14,12 +14,14 @@ infra_monitor — комплексный монитор AI-инфры (v3.0). Н
 свежесть бэкапа + off-site, свободное место, раздувание Docker, размеры логов,
 устаревшие heartbeat-и.
 """
-import os
-import sys
+import hashlib
 import json
-import time
+import os
+import socket
 import subprocess
+import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -75,6 +77,12 @@ TELEGRAM_STATE_FILE = os.getenv(
     "TELEGRAM_MONITOR_STATE_FILE",
     os.path.join(HERE, "runtime", "telegram_health.json"),
 )
+ALERT_STATE_FILE = os.getenv(
+    "INFRA_ALERT_STATE_FILE",
+    os.path.join(HERE, "runtime", "infra_alert.json"),
+)
+ALERT_REPEAT_HOURS = max(1, int(os.getenv("INFRA_ALERT_REPEAT_HOURS", "6")))
+MONITOR_VERSION = "3.1"
 
 crit, warn, ok = [], [], []
 docker_startup_grace = False
@@ -174,16 +182,20 @@ def _load_telegram_state():
 
 
 def _save_telegram_state(state):
-    directory = os.path.dirname(TELEGRAM_STATE_FILE)
+    _save_private_json(TELEGRAM_STATE_FILE, state, "telegram-health-")
+
+
+def _save_private_json(path, state, prefix):
+    directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="telegram-health-", dir=directory, text=True)
+    fd, temporary = tempfile.mkstemp(prefix=prefix, dir=directory, text=True)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(state, handle, ensure_ascii=False, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, TELEGRAM_STATE_FILE)
+        os.replace(temporary, path)
     except Exception:
         try:
             os.close(fd)
@@ -194,6 +206,77 @@ def _save_telegram_state(state):
         except OSError:
             pass
         raise
+
+
+def _load_alert_state():
+    try:
+        with open(ALERT_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_alert_state(state):
+    _save_private_json(ALERT_STATE_FILE, state, "infra-alert-")
+
+
+def monitor_source():
+    configured = os.getenv("INFRA_MONITOR_SOURCE", "").strip()
+    hostname = configured or socket.gethostname().split(".")[0] or "unknown-host"
+    return f"{hostname} · ai.monitor v{MONITOR_VERSION}"
+
+
+def _alert_fingerprint():
+    messages = sorted(str(item) for item in crit + warn)
+    return hashlib.sha256("\n".join(messages).encode("utf-8")).hexdigest()
+
+
+def notify_monitor_state(now_label=None, now_ts=None):
+    """Send a changed alert once, suppress repeats, and announce recovery once."""
+    label = now_label or datetime.now().strftime("%d.%m %H:%M")
+    timestamp = time.time() if now_ts is None else now_ts
+    source = monitor_source()
+    state = _load_alert_state()
+
+    if crit or warn:
+        fingerprint = _alert_fingerprint()
+        last_sent = float(state.get("last_sent_at") or 0)
+        unchanged = state.get("active") and state.get("fingerprint") == fingerprint
+        within_cooldown = timestamp - last_sent < ALERT_REPEAT_HOURS * 3600
+        if unchanged and within_cooldown:
+            return "suppressed"
+
+        msg = f"Infra Monitor | {label}\nИсточник: {source}\n"
+        if crit:
+            msg += "\nКРИТИЧНО:\n" + "\n".join(crit)
+        if warn:
+            msg += "\n\nВнимание:\n" + "\n".join(warn)
+        msg += f"\n\nОК: {len(ok)} проверок"
+        notify.send(msg, "crit" if crit else "warn")
+        _save_alert_state({
+            "active": True,
+            "fingerprint": fingerprint,
+            "last_sent_at": timestamp,
+            "source": source,
+        })
+        return "sent"
+
+    if state.get("active"):
+        notify.send(
+            f"✅ Infra Monitor | {label}\n"
+            f"Система восстановлена, все {len(ok)} проверок пройдены.\n"
+            f"Источник: {source}",
+            "ok",
+        )
+        _save_alert_state({
+            "active": False,
+            "recovered_at": timestamp,
+            "source": source,
+        })
+        return "recovered"
+
+    return "none"
 
 
 def check_telegram():
@@ -380,20 +463,18 @@ def run_check():
     check_containers(); check_services(); check_agents(); check_telegram()
     check_backup(); check_disk(); check_docker_bloat(); check_logs()
 
-    now = datetime.now().strftime("%d.%m %H:%M")
     status = "ok" if not crit and not warn else ("fail" if crit else "warn")
+    notification = notify_monitor_state()
 
     if crit or warn:
-        msg = f"Infra Monitor | {now}\n"
-        if crit:
-            msg += "\nКРИТИЧНО:\n" + "\n".join(crit)
-        if warn:
-            msg += "\n\nВнимание:\n" + "\n".join(warn)
-        msg += f"\n\nОК: {len(ok)} проверок"
-        notify.send(msg, "crit" if crit else "warn")
-        print(f"[infra_monitor] {status}: crit={len(crit)} warn={len(warn)} ok={len(ok)}")
+        suffix = " (повтор подавлен)" if notification == "suppressed" else ""
+        print(
+            f"[infra_monitor] {status}: crit={len(crit)} warn={len(warn)} "
+            f"ok={len(ok)}{suffix}"
+        )
     else:
-        print(f"[infra_monitor] всё ок ({len(ok)} проверок), алерт не нужен")
+        suffix = ", recovery отправлен" if notification == "recovered" else ", алерт не нужен"
+        print(f"[infra_monitor] всё ок ({len(ok)} проверок){suffix}")
 
     if OPS:
         try:
@@ -405,6 +486,8 @@ def run_check():
                     "crit": len(crit),
                     "warn": len(warn),
                     "ok": len(ok),
+                    "notification": notification,
+                    "source": monitor_source(),
                     "message": "; ".join(messages),
                 },
             )

@@ -24,6 +24,7 @@ Amori Agent OS помогает Денису Колесникову вести �
 ## 2. Проверенный статус
 
 Проверено локально 12.08.2026 после пересоздания core Compose и рестарта агентов.
+LLM-маршрутизация и мониторинг повторно проверены 16.08.2026.
 
 | Контур | Фактическое состояние |
 |---|---|
@@ -32,9 +33,9 @@ Amori Agent OS помогает Денису Колесникову вести �
 | Telegram | `getMe` проходит для Emilia и Support; команды опубликованы |
 | Dashboard | `127.0.0.1:8099`, удалённый API требует bearer token |
 | Pixel office | `127.0.0.1:5070` локально, доступ через настроенный private network |
-| LLM production chain | Gemini 3.6 Flash, затем Groq GPT OSS 120B |
+| LLM production chain | Ollama/Qwen на Mac; сложные задачи через Codex/Claude CLI/OAuth |
 | DeepSeek/OpenModel | отключён до появления кредита; HTTP 402 больше не тормозит задачи |
-| Ollama GPU node | опциональный; при выключенном Windows ПК роутер уходит на Groq |
+| Ollama GPU node | опциональный; выключение Windows не влияет на Mac-контур |
 | Qwen/GLM/Kimi web proxies | отключены как optional: реальные smoke-тесты не прошли |
 | Agent tests | полный набор проходит; точное число показывает `make test` |
 | Output audit | текущие доверенные отчёты без известных риск-паттернов |
@@ -183,13 +184,15 @@ sequenceDiagram
 
 ## 6. LLM-маршрутизация
 
-1. Текстовый production fallback: Gemini, затем Groq.
-2. Vision: Groq Vision, затем Gemini Vision.
-3. Локальные тяжёлые роли выбирают Ollama только если Windows API и требуемая
-   модель доступны; иначе `router.py` возвращает Groq.
+1. Простые текстовые запросы и маршрутизация: локальный Ollama/Qwen на Mac.
+2. Vision: локальный `qwen3-vl:2b`; тяжёлые задачи эскалируются через единый broker.
+3. Codex и Claude вызываются через CLI/OAuth существующих подписок для кода,
+   архитектуры и глубокого анализа. Windows Ollama остаётся опциональной GPU-нодой.
 4. OpenModel выключен через `OPENMODEL_ENABLED=0`, потому что аккаунт отвечает
    HTTP 402. Включать только после проверки кредита.
-5. Qwen/GLM/Kimi browser proxies не входят в production chain. Их launchd jobs и
+5. Gemini и Groq — только явный opt-in через `ALLOW_EXTERNAL_LLM_FALLBACK=1`.
+   Groq использует `openai/gpt-oss-120b`; Llama 3.3 70B выведена из эксплуатации.
+6. Qwen/GLM/Kimi browser proxies не входят в production chain. Их launchd jobs и
    watchdogs отключены до успешной авторизации и реального smoke-теста.
 
 ## 7. Безопасность
