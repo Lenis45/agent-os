@@ -62,7 +62,10 @@ df -h ~                                            # реальное место
 docker builder prune -af && docker image prune -f  # вернуть место (build cache, dangling)
 du -sh ~/Library/* | sort -rh | head               # крупные потребители
 ls -lt ~/ai-infra/backups/local/                   # старые снимки (retention 30д сам чистит)
+make storage-maintenance                           # безопасно: только build-cache старше 7д
 ```
+`ai.storage-maintenance` запускает эту безопасную очистку каждое воскресенье в 03:00.
+Он не удаляет контейнеры, образы, volumes, базы, Ollama-модели или backup-архивы.
 Если Docker завис из-за нехватки места: освободить диск → перезапустить Docker:
 ```bash
 osascript -e 'quit app "Docker"'; sleep 5; open -a Docker

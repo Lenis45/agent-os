@@ -431,7 +431,7 @@ Always on:
 
 Scheduled:
   chief.of.staff, email.watchdog, ai.monitor, ai.digest,
-  amori.backup, ai.restoretest, ai.tests
+  amori.backup, ai.restoretest, ai.storage-maintenance, ai.tests
 
 Cron:
   task_sync, calendar_agent, lead_manager
