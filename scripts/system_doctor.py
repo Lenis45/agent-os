@@ -12,12 +12,14 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "agents"
 BACKUPS = ROOT / "backups" / "local"
+STORAGE_STATUS = AGENTS / "runtime" / "storage_maintenance.json"
 
 
 @dataclass
@@ -170,6 +172,34 @@ def disk_check() -> Check:
     return Check(level, "Disk", f"used={used_pct:.1f}%, free={free_gib:.1f} GiB")
 
 
+def storage_maintenance_check() -> Check:
+    if not STORAGE_STATUS.exists():
+        return Check("WARN", "Storage maintenance", "no maintenance status found")
+    try:
+        data = json.loads(STORAGE_STATUS.read_text(encoding="utf-8"))
+        timestamp = data.get("ts", "")
+        updated = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        age_hours = (datetime.now(timezone.utc) - updated).total_seconds() / 3600
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return Check("WARN", "Storage maintenance", f"invalid status: {exc}")
+
+    action = data.get("action", "none")
+    free_gb = data.get("free_gb_after", "unknown")
+    if action == "reboot_required":
+        update_gb = data.get("macos_update_gb", "unknown")
+        target = data.get("target_build", "unknown")
+        return Check(
+            "WARN",
+            "Storage maintenance",
+            f"macOS update {target} is staged ({update_gb} GiB); reboot required; free={free_gb} GiB",
+        )
+    if action == "low_space":
+        return Check("WARN", "Storage maintenance", f"low space remains after cleanup; free={free_gb} GiB")
+    if age_hours > 30:
+        return Check("WARN", "Storage maintenance", f"last run is {age_hours:.1f}h old")
+    return Check("PASS", "Storage maintenance", f"age={age_hours:.1f}h; free={free_gb} GiB")
+
+
 def runtime_check() -> Check:
     python = ROOT / ".venv" / "bin" / "python"
     if not python.exists():
@@ -197,6 +227,7 @@ def main() -> int:
             telegram_check("Telegram Support", env.get("SUPPORT_BOT_TOKEN", "")),
             runtime_check(),
             backup_check(),
+            storage_maintenance_check(),
             disk_check(),
         ]
     )
