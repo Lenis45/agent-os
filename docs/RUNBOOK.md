@@ -62,10 +62,19 @@ df -h ~                                            # реальное место
 docker builder prune -af && docker image prune -f  # вернуть место (build cache, dangling)
 du -sh ~/Library/* | sort -rh | head               # крупные потребители
 ls -lt ~/ai-infra/backups/local/                   # старые снимки (retention 30д сам чистит)
-make storage-maintenance                           # безопасно: только build-cache старше 7д
+make storage-maintenance                           # безопасно: воспроизводимые кэши + диагностика macOS update
 ```
-`ai.storage-maintenance` запускает эту безопасную очистку каждое воскресенье в 03:00.
-Он не удаляет контейнеры, образы, volumes, базы, Ollama-модели или backup-архивы.
+`ai.storage-maintenance` запускает эту безопасную очистку ежедневно в 03:00 и после
+входа пользователя в систему. Обычно
+удаляются Docker build-cache старше суток и dangling images старше 7 дней. Если
+свободно меньше 20 ГБ, дополнительно очищаются только кэши pip, uv, npm и Homebrew.
+Контейнеры, используемые образы, volumes, базы, Ollama-модели, пользовательские файлы
+и backup-архивы не удаляются.
+
+Если в статусе указано `action=reboot_required`, место занимает подготовленное
+обновление macOS. Не удаляйте вручную `/System/Volumes/Update`, Preboot или APFS
+snapshots: выполните обычный перезапуск, чтобы система завершила обновление и сама
+освободила временные данные.
 Если Docker завис из-за нехватки места: освободить диск → перезапустить Docker:
 ```bash
 osascript -e 'quit app "Docker"'; sleep 5; open -a Docker

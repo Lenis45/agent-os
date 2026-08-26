@@ -48,7 +48,7 @@ MacBook не запускает production-агентов. Устаревшая 
 | **infra_monitor** | ai.monitor | ежечасно в `:07` | мониторинг → Telegram; подпись хоста, дедупликация 6ч, recovery |
 | **backup** (NEW) | amori.backup | 4:00 | бэкап + off-site + ротация логов |
 | **restore_test** | ai.restoretest | Сб 5:00 | еженедельная проверка восстановимости бэкапа |
-| **storage maintenance** | ai.storage-maintenance | Вс 3:00 | удаляет только Docker build-cache старше 7 дней |
+| **storage maintenance** | ai.storage-maintenance | ежедневно 3:00 | чистит воспроизводимые кэши; определяет подготовленное обновление macOS |
 | **digest** (NEW) | ai.digest | Пн 9:00 | еженедельная сводка инфры |
 | calendar_agent / task_sync / lead_manager | cron | по расписанию | календарь, задачи и CRM-отчёты |
 
