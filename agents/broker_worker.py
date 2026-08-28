@@ -64,13 +64,35 @@ def _command_version(command: str) -> str:
         return "unavailable"
 
 
+def _command_authenticated(command: str) -> bool:
+    executable = shutil.which(command)
+    if not executable:
+        return False
+    probe = [executable, "auth", "status"] if command == "claude" else [executable, "login", "status"]
+    try:
+        completed = subprocess.run(probe, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    if command == "claude":
+        try:
+            return bool(json.loads(completed.stdout).get("loggedIn"))
+        except (json.JSONDecodeError, AttributeError):
+            return False
+    return "logged in" in (completed.stdout or completed.stderr).casefold()
+
+
 def _runtime_info() -> tuple[dict, dict]:
     global _runtime_info_cache
     now = time.monotonic()
     if _runtime_info_cache and now - _runtime_info_cache[0] < RUNTIME_INFO_TTL_SECONDS:
         return _runtime_info_cache[1], _runtime_info_cache[2]
     versions = {"codex": _command_version("codex"), "claude": _command_version("claude")}
-    auth_status = {"codex": shutil.which("codex") is not None, "claude": shutil.which("claude") is not None}
+    auth_status = {
+        "codex": _command_authenticated("codex"),
+        "claude": _command_authenticated("claude"),
+    }
     _runtime_info_cache = (now, versions, auth_status)
     return versions, auth_status
 
@@ -108,7 +130,11 @@ def _native_tool(request: dict) -> tuple[str, list]:
 
 
 def _model_call(provider: str, effective_prompt: str, request: dict, cwd: Path) -> tuple[str, list]:
-    command = [os.getenv("AMORI_AI_CLI", "amori-ai"), "--json", "--cwd", str(cwd), "--to", provider]
+    command = [
+        os.getenv("AMORI_AI_CLI", "amori-ai"),
+        "--json", "--cwd", str(cwd), "--to", provider,
+        "--allow-subscription-fallback",
+    ]
     if request.get("mode") == "act":
         command.append("--act")
     command.append(effective_prompt)
@@ -121,7 +147,8 @@ def _model_call(provider: str, effective_prompt: str, request: dict, cwd: Path) 
     if not answer:
         raise RuntimeError("Model executor returned an empty result")
     evidence = payload.get("evidence") or []
-    evidence.append({"type": "model_result", "provider": provider})
+    actual_provider = str((payload.get("decision") or {}).get("provider") or provider)
+    evidence.append({"type": "model_result", "provider": actual_provider})
     return answer, evidence
 
 

@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -137,21 +138,78 @@ def test_image_payload_requires_real_image_magic():
 
 
 def test_worker_runtime_info_is_cached(monkeypatch):
-    calls = []
+    version_calls = []
+    auth_calls = []
     broker_worker._runtime_info_cache = None
     monkeypatch.setattr(broker_worker.time, "monotonic", lambda: 100.0)
     monkeypatch.setattr(
         broker_worker,
         "_command_version",
-        lambda command: calls.append(command) or f"{command}-1",
+        lambda command: version_calls.append(command) or f"{command}-1",
     )
-    monkeypatch.setattr(broker_worker.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(
+        broker_worker,
+        "_command_authenticated",
+        lambda command: auth_calls.append(command) or command == "codex",
+    )
 
     first = broker_worker._runtime_info()
     second = broker_worker._runtime_info()
 
     assert first == second
-    assert calls == ["codex", "claude"]
+    assert first[1] == {"codex": True, "claude": False}
+    assert version_calls == ["codex", "claude"]
+    assert auth_calls == ["codex", "claude"]
+
+
+@pytest.mark.parametrize(
+    ("command", "stdout", "returncode", "expected"),
+    [
+        ("claude", '{"loggedIn": true}', 0, True),
+        ("claude", '{"loggedIn": false}', 0, False),
+        ("codex", "Logged in using ChatGPT", 0, True),
+        ("codex", "Not logged in", 1, False),
+    ],
+)
+def test_worker_checks_real_subscription_auth(monkeypatch, command, stdout, returncode, expected):
+    monkeypatch.setattr(broker_worker.shutil, "which", lambda _command: f"/bin/{command}")
+    monkeypatch.setattr(
+        broker_worker.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], returncode, stdout, ""),
+    )
+
+    assert broker_worker._command_authenticated(command) is expected
+
+
+def test_broker_model_call_allows_routed_subscription_fallback(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, _request_id, *, timeout):
+        captured["command"] = command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps({
+                "answer": "готово",
+                "decision": {"provider": "codex"},
+                "evidence": [],
+            }, ensure_ascii=False),
+            "",
+        )
+
+    monkeypatch.setattr(broker_worker, "_run_cancellable", fake_run)
+
+    answer, evidence = broker_worker._model_call(
+        "claude",
+        "Проведи анализ",
+        {"id": "request-1", "mode": "ask"},
+        tmp_path,
+    )
+
+    assert answer == "готово"
+    assert "--allow-subscription-fallback" in captured["command"]
+    assert evidence[-1] == {"type": "model_result", "provider": "codex"}
 
 
 def test_document_text_is_embedded_and_refusal_falls_back(monkeypatch, tmp_path):
