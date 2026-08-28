@@ -27,6 +27,50 @@ def test_week_digest_groups_events_by_day():
     assert "🔒" in out
 
 
+def test_today_digest_lists_only_today_and_location():
+    events = [
+        {
+            "summary": "Встреча с командой",
+            "location": "O'Surf",
+            "start": {"dateTime": "2026-07-18T15:00:00+03:00"},
+        },
+        {
+            "summary": "Завтрашний звонок",
+            "start": {"dateTime": "2026-07-19T10:00:00+03:00"},
+        },
+    ]
+
+    out = calendar_agent.format_today_digest(events, now=datetime(2026, 7, 18, 8, 0))
+
+    assert "ВСТРЕЧИ НА СЕГОДНЯ" in out
+    assert "15:00 — Встреча с командой · O'Surf" in out
+    assert "Завтрашний звонок" not in out
+
+
+def test_today_digest_has_clear_empty_state():
+    out = calendar_agent.format_today_digest([], now=datetime(2026, 7, 18, 8, 0))
+
+    assert "В календаре встреч нет" in out
+
+
+def test_morning_digest_deduplicates_only_successful_delivery(monkeypatch):
+    now = datetime(2026, 7, 18, 8, 30)
+    monkeypatch.setattr(
+        calendar_agent.ops_store,
+        "get_automation_state",
+        lambda *_args, **_kwargs: {"date": "2026-07-18", "delivered": True},
+    )
+
+    assert calendar_agent.morning_digest_delivered(now) is True
+
+    monkeypatch.setattr(
+        calendar_agent.ops_store,
+        "get_automation_state",
+        lambda *_args, **_kwargs: {"date": "2026-07-18", "delivered": False},
+    )
+    assert calendar_agent.morning_digest_delivered(now) is False
+
+
 def test_event_list_is_numbered_for_telegram_edits():
     events = [
         {

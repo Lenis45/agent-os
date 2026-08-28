@@ -7,7 +7,7 @@ import runtime_bootstrap
 
 runtime_bootstrap.ensure_isolated_runtime()
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
@@ -83,8 +83,9 @@ def local_now() -> datetime:
 
 def get_upcoming_events(days=7):
     service = get_calendar_service()
-    now = datetime.utcnow().isoformat() + 'Z'
-    end = (datetime.utcnow() + timedelta(days=days)).isoformat() + 'Z'
+    now_utc = datetime.now(timezone.utc)
+    now = now_utc.isoformat().replace("+00:00", "Z")
+    end = (now_utc + timedelta(days=days)).isoformat().replace("+00:00", "Z")
     result = _execute_google(service.events().list(
         calendarId='primary',
         timeMin=now, timeMax=end,
@@ -187,6 +188,54 @@ def format_week_digest(events: list[dict], days: int = 7, now: datetime | None =
         else:
             lines.append(f"• весь день — {title}{marker}")
     return "\n".join(lines)
+
+
+def format_today_digest(events: list[dict], now: datetime | None = None) -> str:
+    """Compact list of today's meetings for the 08:00 Telegram message."""
+    now = now or local_now()
+    relevant = []
+    for event in events:
+        start = _parse_event_dt(_event_start_raw(event))
+        if start is not None and start.date() == now.date():
+            relevant.append((start, event))
+    relevant.sort(key=lambda item: item[0])
+
+    lines = [f"📅 ВСТРЕЧИ НА СЕГОДНЯ · {now:%d.%m.%Y}"]
+    if not relevant:
+        lines.append("В календаре встреч нет.")
+        return "\n".join(lines)
+
+    for start, event in relevant:
+        title = event.get("summary") or "Без названия"
+        location = (event.get("location") or "").strip()
+        marker = " 🔒" if is_manually_added(event) else ""
+        time_text = start.strftime("%H:%M") if "T" in _event_start_raw(event) else "весь день"
+        line = f"• {time_text} — {title}{marker}"
+        if location:
+            line += f" · {location}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def morning_digest_delivered(now: datetime | None = None) -> bool:
+    """Return True after today's scheduled report was delivered successfully."""
+    now = now or local_now()
+    try:
+        state = ops_store.get_automation_state("calendar_morning_digest", {}) or {}
+        return state.get("date") == now.strftime("%Y-%m-%d") and bool(state.get("delivered"))
+    except Exception:
+        return False
+
+
+def remember_morning_digest(now: datetime | None = None) -> None:
+    now = now or local_now()
+    try:
+        ops_store.set_automation_state(
+            "calendar_morning_digest",
+            {"date": now.strftime("%Y-%m-%d"), "delivered": True},
+        )
+    except Exception as exc:
+        log.warning("Morning digest state was not saved: %s", exc)
 
 
 def sorted_relevant_events(events: list[dict], days: int = 30, now: datetime | None = None) -> list[dict]:
@@ -615,6 +664,17 @@ async def run():
         return
     log.info(f"Событий в календаре: {len(upcoming)}")
 
+    if morning_digest_delivered(now):
+        log.info("Утренний календарный дайджест уже доставлен сегодня: повтор пропущен")
+        try:
+            ops_store.heartbeat("calendar_agent", "ok", {
+                "message": "Повторный запуск пропущен: дайджест уже доставлен",
+                "events": len(upcoming),
+            })
+        except Exception:
+            pass
+        return
+
     existing_titles = []
     for e in upcoming:
         title = e.get('summary', '')
@@ -779,18 +839,22 @@ EMAIL (последние 3 дня):
         upcoming = get_upcoming_events(days=7)
     except Exception:
         pass
+    report += format_today_digest(upcoming, now=now) + "\n\n"
     report += format_week_digest(upcoming, days=7, now=now) + "\n"
 
-    notify.send(report)
+    delivered = notify.send(report)
+    if delivered:
+        remember_morning_digest(now)
     try:
         ops_store.heartbeat("calendar_agent", "ok", {
-            "message": "Недельный календарь проверен",
+            "message": "Утренний календарь доставлен" if delivered else "Не удалось доставить календарь",
             "events": len(upcoming),
             "added": len(added),
+            "delivered": delivered,
         })
     except Exception:
         pass
-    log.info("Отчёт отправлен")
+    log.info("Отчёт отправлен" if delivered else "Отчёт не доставлен")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amori Calendar Manager")
@@ -803,6 +867,10 @@ if __name__ == "__main__":
     elif args.digest:
         now_cli = local_now()
         events = get_upcoming_events(days=7)
-        notify.send(f"📅 Calendar Manager | {now_cli:%d.%m.%Y %H:%M}\n\n{format_week_digest(events, now=now_cli)}")
+        notify.send(
+            f"📅 Calendar Manager | {now_cli:%d.%m.%Y %H:%M}\n\n"
+            f"{format_today_digest(events, now=now_cli)}\n\n"
+            f"{format_week_digest(events, now=now_cli)}"
+        )
     else:
         asyncio.run(run())

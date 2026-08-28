@@ -50,7 +50,8 @@ MacBook не запускает production-агентов. Устаревшая 
 | **restore_test** | ai.restoretest | Сб 5:00 | еженедельная проверка восстановимости бэкапа |
 | **storage maintenance** | ai.storage-maintenance | ежедневно 3:00 | чистит воспроизводимые кэши; определяет подготовленное обновление macOS |
 | **digest** (NEW) | ai.digest | Пн 9:00 | еженедельная сводка инфры |
-| calendar_agent / task_sync / lead_manager | cron | по расписанию | календарь, задачи и CRM-отчёты |
+| calendar_agent | ai.calendar-digest | ежедневно 8:00 | встречи на сегодня + календарь на неделю в чате Emilia |
+| task_sync / lead_manager | cron | по расписанию | задачи и CRM-отчёты |
 
 ## Библиотеки (общие, не агенты)
 - `router.py` — local-first выбор модели per-agent; внешние API только по opt-in.
