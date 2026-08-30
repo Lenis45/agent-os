@@ -2,7 +2,8 @@
 """Per-agent operational audit for the personal Amori AI-team."""
 import os
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 import db
 import agent_contracts
@@ -31,6 +32,8 @@ AGENTS = {
 
 REPORT_TRUST_CUTOFF = os.getenv("REPORT_TRUST_CUTOFF", "2026-08-05T00:00:00+03:00")
 ERROR_MARKERS = ("Traceback", "CRITICAL", "invalid_grant", "AUTHENTICATIONFAILED", "Connection refused")
+LOG_ERROR_WINDOW_HOURS = int(os.getenv("AGENT_AUDIT_LOG_WINDOW_HOURS", "24"))
+LOG_TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 START_MARKERS = (
     "запущен", "запущен...", "Support Agent запущен", "worker dispatcher запущен",
     "[notify] sent", "[infra_monitor] всё ок", "✓ PASS",
@@ -82,7 +85,7 @@ def _heartbeats():
     return {component: {"status": status, "last_seen": last_seen} for component, status, last_seen in rows}
 
 
-def _log_findings(log_name):
+def _log_findings(log_name, *, now=None):
     if not log_name:
         return []
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_name)
@@ -96,8 +99,19 @@ def _log_findings(log_name):
             break
     findings = []
     for marker in ERROR_MARKERS:
-        if any(marker in line for line in tail):
-            findings.append(marker)
+        for idx, line in enumerate(tail):
+            if marker not in line:
+                continue
+            event_time = None
+            for previous in range(idx, max(-1, idx - 80), -1):
+                match = LOG_TIMESTAMP.match(tail[previous])
+                if match:
+                    event_time = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+                    break
+            current = now or datetime.now()
+            if event_time is None or current - event_time <= timedelta(hours=LOG_ERROR_WINDOW_HOURS):
+                findings.append(marker)
+                break
     return findings
 
 

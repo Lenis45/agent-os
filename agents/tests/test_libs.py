@@ -472,6 +472,27 @@ def test_local_vision_prevents_external_fallback(monkeypatch, tmp_path):
     assert llm.vision_analyze("Опиши", str(image)) == "на изображении ошейник"
 
 
+def test_local_vision_reserves_budget_for_thinking_model(monkeypatch, tmp_path):
+    image = tmp_path / "pixel.png"
+    image.write_bytes(b"image")
+    captured = {}
+    monkeypatch.setattr(llm, "LOCAL_FIRST_ENABLED", True)
+    monkeypatch.setattr(llm, "ALLOW_EXTERNAL_FALLBACK", False)
+    monkeypatch.setenv("LOCAL_VISION_MAX_TOKENS", "2200")
+
+    def fake_ollama(messages, _model, **kwargs):
+        captured["prompt"] = messages[0]["content"]
+        captured["max_tokens"] = kwargs["max_tokens"]
+        return "готово", {"prompt_tokens": 8, "completion_tokens": 4}
+
+    monkeypatch.setattr(llm, "_ollama_chat", fake_ollama)
+    monkeypatch.setattr(cost_guard, "record_usage", lambda *_args, **_kwargs: None)
+
+    assert llm.vision_analyze("Опиши", str(image)) == "готово"
+    assert "Сразу сформулируй конечный ответ" in captured["prompt"]
+    assert captured["max_tokens"] == 2200
+
+
 def test_praison_critical_approval_is_scoped_to_arguments_and_agent():
     baseline = ApprovalRegistry._approval_cache_key(
         "execute_command", {"command": "ls"}, "worker-a"

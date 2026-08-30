@@ -171,7 +171,7 @@ def _ollama_chat(messages, model: str, max_tokens: int = 1500,
         "messages": normalized_messages,
         "stream": False,
         "think": False,
-        "keep_alive": "10m",
+        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "3m"),
         "options": {"temperature": temperature, "num_predict": max_tokens},
     }).encode("utf-8")
     request = urllib.request.Request(
@@ -637,13 +637,18 @@ def vision_analyze(prompt: str, image_paths, agent_key: str = "orchestrator",
     local_paths = fallback_image_paths if fallback_image_paths is not None else image_paths
     if LOCAL_FIRST_ENABLED:
         try:
+            local_prompt = (
+                f"{prompt}\n\n"
+                "Сразу сформулируй конечный ответ на языке пользователя. "
+                "Не расходуй весь лимит на внутреннее рассуждение."
+            )
             encoded = []
             for path in (local_paths if isinstance(local_paths, (list, tuple)) else [local_paths]):
                 encoded.append(base64.b64encode(open(path, "rb").read()).decode("ascii"))
             result, usage = _ollama_chat(
-                [{"role": "user", "content": prompt, "images": encoded}],
+                [{"role": "user", "content": local_prompt, "images": encoded}],
                 LOCAL_VISION_MODEL,
-                max_tokens=1200,
+                max_tokens=int(os.getenv("LOCAL_VISION_MAX_TOKENS", "2200")),
                 timeout=180,
             )
             if result:
