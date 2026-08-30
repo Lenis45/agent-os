@@ -27,25 +27,37 @@ def create_request(
     *, source: str, actor_id: str, session_id: str, prompt_text: str,
     mode: str, idempotency_key: str, source_message_id: str = "",
     cwd: str = "", target_device: str = "auto", route: Optional[dict] = None,
-    input_artifact_ids: Optional[list[str]] = None,
+    input_artifact_ids: Optional[list[str]] = None, parent_request_id: str = "",
 ) -> tuple[dict, bool]:
     request_id = str(uuid.uuid4())
     conn = ops_store.get_conn()
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        parent = None
+        if parent_request_id:
+            cur.execute(
+                """SELECT * FROM smart_requests
+                   WHERE id=%s AND source=%s AND actor_id=%s AND session_id=%s""",
+                (parent_request_id, source, actor_id, session_id),
+            )
+            parent = cur.fetchone()
+            if not parent:
+                raise ValueError("Continuation parent does not belong to this session")
+        thread_id = str((parent or {}).get("thread_id") or (parent or {}).get("id") or request_id)
+        artifacts = input_artifact_ids or ((parent or {}).get("input_artifact_ids") or [])
         cur.execute(
             """
             INSERT INTO smart_requests (
                 id, source, actor_id, session_id, source_message_id,
                 idempotency_key, prompt_text, mode, cwd, target_device, route,
-                input_artifact_ids, status
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'queued')
+                input_artifact_ids, parent_request_id, thread_id, status
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,'queued')
             ON CONFLICT (idempotency_key) DO NOTHING RETURNING *
             """,
             (
                 request_id, source, actor_id, session_id, source_message_id or None,
                 idempotency_key, prompt_text, mode, cwd or None, target_device,
-                _json(route or {}), _json(input_artifact_ids or []),
+                _json(route or {}), _json(artifacts), parent_request_id or None, thread_id,
             ),
         )
         row = cur.fetchone()
@@ -53,12 +65,29 @@ def create_request(
         if not row:
             cur.execute("SELECT * FROM smart_requests WHERE idempotency_key=%s", (idempotency_key,))
             row = cur.fetchone()
+        if created:
+            cur.execute(
+                """INSERT INTO smart_sessions(
+                       source, actor_id, session_id, current_thread_id, last_request_id, reset_at
+                   ) VALUES (%s,%s,%s,%s,%s,NULL)
+                   ON CONFLICT (source, actor_id, session_id) DO UPDATE SET
+                       current_thread_id=EXCLUDED.current_thread_id,
+                       last_request_id=EXCLUDED.last_request_id,
+                       reset_at=NULL,
+                       updated_at=now()""",
+                (source, actor_id, session_id, thread_id, request_id),
+            )
         conn.commit()
         result = _row(row)
     finally:
         conn.close()
     if created:
         append_event(str(result["id"]), "accepted", "Запрос принят", 5)
+        if parent_request_id:
+            append_event(
+                str(result["id"]), "continued", "Продолжение текущей задачи", 10,
+                {"parent_request_id": parent_request_id, "thread_id": thread_id},
+            )
         append_event(str(result["id"]), "routed", "Маршрут выбран", 15, {"route": route or {}})
         # Events are audit stages; the request remains claimable.
         set_status(str(result["id"]), "queued")
@@ -80,12 +109,66 @@ def latest_request(source: str, actor_id: str, session_id: str) -> Optional[dict
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
+            """SELECT last_request_id FROM smart_sessions
+               WHERE source=%s AND actor_id=%s AND session_id=%s""",
+            (source, actor_id, session_id),
+        )
+        state = cur.fetchone()
+        if state is not None:
+            if not state["last_request_id"]:
+                return None
+            cur.execute("SELECT * FROM smart_requests WHERE id=%s", (state["last_request_id"],))
+            return _row(cur.fetchone())
+        cur.execute(
             """SELECT * FROM smart_requests
                WHERE source=%s AND actor_id=%s AND session_id=%s
                ORDER BY created_at DESC LIMIT 1""",
             (source, actor_id, session_id),
         )
         return _row(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def reset_session(source: str, actor_id: str, session_id: str) -> None:
+    """Start a new topic without deleting the request audit trail."""
+    conn = ops_store.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO smart_sessions(
+                   source, actor_id, session_id, current_thread_id, last_request_id, reset_at
+               ) VALUES (%s,%s,%s,NULL,NULL,now())
+               ON CONFLICT (source, actor_id, session_id) DO UPDATE SET
+                   current_thread_id=NULL, last_request_id=NULL,
+                   reset_at=now(), updated_at=now()""",
+            (source, actor_id, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_thread_requests(thread_id: str, *, before_request_id: str = "", limit: int = 4) -> list[dict]:
+    """Return a bounded, chronological context window for one task thread."""
+    conn = ops_store.get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        before_clause = ""
+        params: list[Any] = [thread_id]
+        if before_request_id:
+            before_clause = "AND created_at < (SELECT created_at FROM smart_requests WHERE id=%s)"
+            params.append(before_request_id)
+        params.append(max(1, min(limit, 10)))
+        cur.execute(
+            f"""SELECT * FROM (
+                    SELECT * FROM smart_requests
+                    WHERE thread_id=%s {before_clause}
+                    ORDER BY created_at DESC LIMIT %s
+                ) recent ORDER BY created_at""",
+            params,
+        )
+        return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
@@ -204,9 +287,19 @@ def claim_request(worker_id: str, device: str, capabilities: list[str]) -> Optio
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             """
-            SELECT * FROM smart_requests
-            WHERE status IN ('queued','waiting_for_device')
-              AND target_device IN ('auto','current',%s)
+            SELECT child.* FROM smart_requests child
+            WHERE child.status IN ('queued','waiting_for_device')
+              AND child.target_device IN ('auto','current',%s)
+              AND (
+                  child.parent_request_id IS NULL OR EXISTS (
+                      SELECT 1 FROM smart_requests parent
+                      WHERE parent.id=child.parent_request_id
+                        AND (
+                            parent.status IN ('completed','partial','failed','cancelled') OR
+                            (parent.status='awaiting_confirmation' AND child.mode='ask')
+                        )
+                  )
+              )
             ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 20
             """,
             (device,),

@@ -75,6 +75,11 @@ def latest(source: str, actor_id: str, session_id: str) -> Optional[dict]:
     return _request("GET", f"/v1/sessions/{'/'.join(parts)}/latest").get("request")
 
 
+def reset_session(source: str, actor_id: str, session_id: str) -> bool:
+    parts = [urllib.parse.quote(value, safe="") for value in (source, actor_id, session_id)]
+    return bool(_request("POST", f"/v1/sessions/{'/'.join(parts)}/reset", {}).get("reset"))
+
+
 def confirm(request_id: str, actor_id: str) -> bool:
     response = _request("POST", f"/v1/requests/{request_id}/confirm", {"actor_id": actor_id})
     return bool(response.get("confirmed"))

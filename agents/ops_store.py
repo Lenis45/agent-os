@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS smart_requests (
     error_code TEXT,
     error_message TEXT,
     parent_request_id UUID,
+    thread_id UUID,
     attempts SMALLINT NOT NULL DEFAULT 0,
     leased_by TEXT,
     lease_expires_at TIMESTAMPTZ,
@@ -242,8 +243,23 @@ CREATE TABLE IF NOT EXISTS smart_requests (
     finished_at TIMESTAMPTZ
 );
 ALTER TABLE smart_requests ADD COLUMN IF NOT EXISTS input_artifact_ids JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE smart_requests ADD COLUMN IF NOT EXISTS parent_request_id UUID;
+ALTER TABLE smart_requests ADD COLUMN IF NOT EXISTS thread_id UUID;
+UPDATE smart_requests SET thread_id=id WHERE thread_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_smart_requests_queue ON smart_requests (status, target_device, created_at);
 CREATE INDEX IF NOT EXISTS idx_smart_requests_session ON smart_requests (source, actor_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_smart_requests_thread ON smart_requests (thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS smart_sessions (
+    source TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    current_thread_id UUID,
+    last_request_id UUID REFERENCES smart_requests(id) ON DELETE SET NULL,
+    reset_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, actor_id, session_id)
+);
 
 CREATE TABLE IF NOT EXISTS smart_request_events (
     id BIGSERIAL PRIMARY KEY,

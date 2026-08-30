@@ -38,6 +38,7 @@ class RequestCreate(BaseModel):
     cwd: str = Field(default="", max_length=2000)
     target_device: str = Field(default="auto", max_length=100)
     artifact_ids: list[str] = Field(default_factory=list, max_length=20)
+    parent_request_id: Optional[uuid.UUID] = None
 
 
 class WorkerHeartbeat(BaseModel):
@@ -135,8 +136,37 @@ def _target_device(payload: RequestCreate, route: dict) -> str:
     return "mac-mini" if target in {"auto", "current", "mac-mini"} else target
 
 
+def _routing_text(payload: RequestCreate, parent: Optional[dict]) -> str:
+    """Give the router enough thread context without forwarding the whole chat."""
+    if not parent:
+        return payload.text
+    prior = request_store.list_thread_requests(str(parent.get("thread_id") or parent["id"]), limit=3)
+    sections = ["Текущая ветка задачи:"]
+    for item in prior:
+        sections.append(f"- Запрос: {str(item.get('prompt_text') or '')[:900]}")
+        if item.get("result_text"):
+            sections.append(f"  Результат: {str(item['result_text'])[:700]}")
+    sections.append(f"Новое уточнение пользователя: {payload.text}")
+    return "\n".join(sections)[:5000]
+
+
 def submit(payload: RequestCreate) -> tuple[dict, bool]:
-    route = route_prompt(payload.text, payload.mode)
+    parent_request_id = str(payload.parent_request_id or "")
+    parent = None
+    if parent_request_id:
+        parent = request_store.get_request(parent_request_id)
+        if not parent or any(
+            str(parent.get(key)) != expected
+            for key, expected in (
+                ("source", payload.source), ("actor_id", payload.actor_id),
+                ("session_id", payload.session_id),
+            )
+        ):
+            raise ValueError("Continuation parent does not belong to this session")
+        if parent.get("status") == "awaiting_confirmation" and payload.mode == "act":
+            request_store.cancel_request(str(parent["id"]))
+            parent = request_store.get_request(str(parent["id"]))
+    route = route_prompt(_routing_text(payload, parent), payload.mode)
     target_device = _target_device(payload, route)
     request, created = request_store.create_request(
         source=payload.source,
@@ -150,6 +180,7 @@ def submit(payload: RequestCreate) -> tuple[dict, bool]:
         target_device=target_device,
         route=route,
         input_artifact_ids=payload.artifact_ids,
+        parent_request_id=parent_request_id,
     )
     if created and payload.mode == "act":
         request_store.set_status(str(request["id"]), "awaiting_confirmation")
@@ -224,6 +255,8 @@ def health() -> dict:
 def create_request(payload: RequestCreate) -> dict:
     try:
         request, created = submit(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except (RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         raise HTTPException(status_code=503, detail=f"Router unavailable: {error}") from error
     return {"created": created, "request": request}
@@ -261,6 +294,12 @@ def read_events(request_id: str, after_id: int = 0) -> dict:
 def read_latest(source: str, actor_id: str, session_id: str) -> dict:
     request = request_store.latest_request(source, actor_id, session_id)
     return {"request": request}
+
+
+@app.post("/v1/sessions/{source}/{actor_id}/{session_id}/reset", dependencies=[Depends(require_bearer)])
+def reset_session(source: str, actor_id: str, session_id: str) -> dict:
+    request_store.reset_session(source, actor_id, session_id)
+    return {"reset": True}
 
 
 @app.post("/v1/requests/{request_id}/cancel", dependencies=[Depends(require_bearer)])

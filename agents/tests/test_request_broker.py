@@ -1,5 +1,6 @@
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -252,6 +253,139 @@ def test_explicit_side_effect_requires_action_mode():
     assert orchestrator.infer_request_mode("Проанализируй договор и выпиши риски") == "ask"
     assert orchestrator.infer_request_mode("Добавь встречу завтра в 10:00") == "act"
     assert orchestrator.infer_request_mode("Исправь код и сделай коммит") == "act"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Продолжай", True),
+        ("Да, делай", True),
+        ("Исправь это и перепроверь", True),
+        ("А теперь сделай короче", True),
+        ("Почему там выбрана эта модель?", True),
+        ("Почему небо голубое?", False),
+        ("Новая задача: подготовь пост", False),
+        ("Какая погода завтра?", False),
+    ],
+)
+def test_continuation_classifier_separates_followups_from_new_topics(text, expected):
+    latest = {
+        "id": "parent",
+        "status": "completed",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    assert bool(orchestrator.continuation_reason(text, latest)) is expected
+
+
+def test_reply_to_message_continues_recent_task():
+    latest = {
+        "id": "parent",
+        "status": "completed",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    assert orchestrator.continuation_reason(
+        "Сформулируй иначе", latest, reply_to_message=True
+    ) == "reply"
+
+
+def test_stale_thread_is_not_resumed_implicitly():
+    latest = {
+        "id": "parent",
+        "status": "completed",
+        "created_at": (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
+    }
+
+    assert orchestrator.continuation_reason("Продолжай", latest) is None
+
+
+def test_routing_text_contains_only_bounded_thread_context(monkeypatch):
+    monkeypatch.setattr(
+        request_broker.request_store,
+        "list_thread_requests",
+        lambda *_args, **_kwargs: [
+            {"prompt_text": "Проверь систему", "result_text": "Найден риск"},
+        ],
+    )
+    payload = request_broker.RequestCreate(
+        source="telegram", actor_id="denis", session_id="chat",
+        text="Исправь это", parent_request_id="00000000-0000-0000-0000-000000000001",
+    )
+
+    text = request_broker._routing_text(payload, {"id": "parent", "thread_id": "thread"})
+
+    assert "Проверь систему" in text
+    assert "Найден риск" in text
+    assert text.endswith("Новое уточнение пользователя: Исправь это")
+
+
+def test_worker_handoff_contains_goal_result_and_selected_skills(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        broker_worker.request_store,
+        "list_thread_requests",
+        lambda *_args, **_kwargs: [
+            {
+                "prompt_text": "Проведи аудит Emilia",
+                "status": "completed",
+                "result_text": "Найдена потеря контекста",
+            }
+        ],
+    )
+    prompt = broker_worker._execution_prompt({
+        "id": "child",
+        "thread_id": "thread",
+        "parent_request_id": "parent",
+        "prompt_text": "Исправь это и добавь тесты",
+        "mode": "act",
+        "cwd": str(tmp_path),
+        "route": {
+            "provider": "codex",
+            "selected_skills": ["debugging", "testing"],
+            "expected_outputs": ["code", "tests"],
+        },
+    })
+
+    assert "Проведи аудит Emilia" in prompt
+    assert "Найдена потеря контекста" in prompt
+    assert "Исправь это и добавь тесты" in prompt
+    assert "debugging, testing" in prompt
+    assert len(prompt) <= 9000
+
+
+def test_api_can_reset_current_topic(monkeypatch):
+    monkeypatch.setenv("AMORI_BROKER_TOKEN", "test-token")
+    calls = []
+    monkeypatch.setattr(
+        request_broker.request_store, "reset_session",
+        lambda source, actor, session: calls.append((source, actor, session)),
+    )
+    client = TestClient(request_broker.app)
+
+    response = client.post(
+        "/v1/sessions/telegram/denis/chat/reset",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reset": True}
+    assert calls == [("telegram", "denis", "chat")]
+
+
+def test_submission_rejects_parent_from_another_session(monkeypatch):
+    monkeypatch.setattr(
+        request_broker.request_store, "get_request",
+        lambda _request_id: {
+            "id": "parent", "source": "telegram", "actor_id": "other",
+            "session_id": "chat", "status": "completed",
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not belong"):
+        request_broker.submit(request_broker.RequestCreate(
+            source="telegram", actor_id="denis", session_id="chat",
+            text="Продолжай", parent_request_id="00000000-0000-0000-0000-000000000001",
+        ))
 
 
 def test_action_submission_waits_for_confirmation(monkeypatch):

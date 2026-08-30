@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
@@ -26,13 +26,13 @@ from telegram_format import normalize_plain_text
 from telegram_runtime import install_error_handler
 
 load_dotenv()
-init_db()
 log = get_logger("orchestrator")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 MAX_TELEGRAM_REPLY_CHARS = 3500
 BROKER_TERMINAL = {"completed", "partial", "failed", "cancelled", "awaiting_confirmation"}
+_broker_submit_locks: dict[str, asyncio.Lock] = {}
 
 # ===== ИСТОРИЯ РАЗГОВОРА =====
 
@@ -59,6 +59,55 @@ def infer_request_mode(text: str) -> str:
     return "act" if any(re.search(pattern, lowered) for pattern in action_patterns) else "ask"
 
 
+def continuation_reason(
+    text: str, latest: dict | None, *, reply_to_message: bool = False,
+    now: datetime | None = None,
+) -> str | None:
+    """Classify a follow-up deterministically, without spending an LLM call."""
+    if not latest:
+        return None
+    normalized = " ".join((text or "").casefold().split())
+    if not normalized:
+        return None
+    if re.match(r"^(новая задача|новая тема|другая тема|отдельная задача|перейд[её]м к)\b", normalized):
+        return None
+    if reply_to_message:
+        return "reply"
+
+    created_raw = latest.get("created_at")
+    if isinstance(created_raw, str):
+        try:
+            created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            current = now or datetime.now(timezone.utc)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            max_hours = float(os.getenv("AMORI_THREAD_TTL_HOURS", "48"))
+            if (current.astimezone(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds() > max_hours * 3600:
+                return None
+        except (TypeError, ValueError):
+            pass
+
+    strong_followups = (
+        r"^(продолжай|продолжи|дальше|доделай|дополни|перепроверь|проверь ещё)",
+        r"^(да[, ]+)?(делай|давай|выполняй|начинай)(?:[.! ]|$)",
+        r"^(исправь|измени|убери|добавь|сократи|расширь|реализуй|запусти|сделай)\s+(это|его|её|там|тут|в этом|в ней|в нём)",
+        r"^(нет[,. ]|я имел в виду|я имею в виду|попробуй ещё раз|сделай в (кодексе|codex|клауде|claude))",
+        r"^почему (так|там|тут|это)\b",
+        r"^(а теперь|теперь|тогда|также|так же|ещё|и ещё|а можешь|можешь ещё)\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in strong_followups):
+        return "followup_phrase"
+
+    contextual_refs = r"\b(это|этого|этому|этим|его|её|там|тут|выше|предыдущ|последн(?:ий|яя|ее)|этот файл|этот документ)\b"
+    if len(normalized) <= 700 and re.search(contextual_refs, normalized):
+        return "context_reference"
+
+    if latest.get("status") not in broker_client.TERMINAL_STATUSES and len(normalized) <= 500:
+        if re.match(r"^(добавь|исправь|измени|убери|сократи|уточни|перепроверь)\b", normalized):
+            return "active_task_update"
+    return None
+
+
 def _broker_status_text(response: dict) -> str:
     request = response.get("request") or {}
     events = response.get("events") or []
@@ -78,8 +127,9 @@ def _broker_status_text(response: dict) -> str:
     route = request.get("route") or {}
     executor = route.get("provider") or route.get("execution_handler") or "автоматически"
     detail = last.get("message") or labels.get(status, status)
+    context = "\nКонтекст: продолжение текущей задачи" if request.get("parent_request_id") else ""
     return normalize_telegram_reply(
-        f"Задача: {labels.get(status, status)}\nИсполнитель: {executor}\nЭтап: {detail}",
+        f"Задача: {labels.get(status, status)}{context}\nИсполнитель: {executor}\nЭтап: {detail}",
         max_chars=900,
     )
 
@@ -148,25 +198,43 @@ async def _wait_and_deliver_broker(update: Update, request_id: str, user_id: str
 
 async def _submit_to_broker(
     update: Update, text: str, user_id: str, *, artifact_ids: list[str] | None = None,
-    saved_user_text: str | None = None,
+    saved_user_text: str | None = None, force_new: bool = False,
 ) -> dict:
-    progress = await update.effective_chat.send_message("Принимаю задачу и выбираю исполнителя...")
-    payload = {
-        "source": "telegram",
-        "actor_id": user_id,
-        "session_id": str(update.effective_chat.id),
-        "source_message_id": str(update.message.message_id),
-        "text": text,
-        "mode": infer_request_mode(text),
-        "cwd": "/Users/denis/ai-infra",
-        "target_device": "auto",
-        "artifact_ids": artifact_ids or [],
-    }
-    try:
-        response = await asyncio.to_thread(broker_client.submit, **payload)
-    except Exception:
-        await _edit_progress(progress, "Не смог передать задачу исполнителю. Повтори запрос через несколько секунд.")
-        raise
+    session_id = str(update.effective_chat.id)
+    lock = _broker_submit_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        try:
+            latest = await asyncio.to_thread(broker_client.latest, "telegram", user_id, session_id)
+        except broker_client.BrokerError as error:
+            log.warning("Cannot read current broker thread before submit: %s", error)
+            latest = None
+        reason = None if force_new else continuation_reason(
+            text, latest, reply_to_message=bool(getattr(update.message, "reply_to_message", None)),
+        )
+        parent_request_id = str(latest["id"]) if reason and latest else ""
+        progress_text = (
+            "Продолжаю текущую задачу и уточняю постановку..."
+            if parent_request_id else "Создаю новую задачу и выбираю исполнителя..."
+        )
+        progress = await update.effective_chat.send_message(progress_text)
+        payload = {
+            "source": "telegram",
+            "actor_id": user_id,
+            "session_id": session_id,
+            "source_message_id": str(update.message.message_id),
+            "text": text,
+            "mode": infer_request_mode(text),
+            "cwd": "/Users/denis/ai-infra",
+            "target_device": "auto",
+            "artifact_ids": artifact_ids or [],
+        }
+        if parent_request_id:
+            payload["parent_request_id"] = parent_request_id
+        try:
+            response = await asyncio.to_thread(broker_client.submit, **payload)
+        except Exception:
+            await _edit_progress(progress, "Не смог передать задачу исполнителю. Повтори запрос через несколько секунд.")
+            raise
     request = response["request"]
     save_message(user_id, "user", saved_user_text or text, "broker")
     return await _wait_and_deliver_broker(update, str(request["id"]), user_id, progress)
@@ -1030,6 +1098,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _submit_to_broker(
                     update, task, user_id, artifact_ids=[artifact.id],
                     saved_user_text=f"[документ {fname}; artifact={artifact.id}] {caption}",
+                    force_new=True,
                 )
                 return
             result = await loop.run_in_executor(_executor, lambda: analyze_document(extraction, fname, task))
@@ -1231,6 +1300,13 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
     clear_pending(user_id)
+    if broker_enabled():
+        try:
+            await asyncio.to_thread(
+                broker_client.reset_session, "telegram", user_id, str(update.effective_chat.id)
+            )
+        except broker_client.BrokerError as error:
+            log.warning("Cannot reset broker context: %s", error)
     await update.message.reply_text("🗑 История разговора очищена.")
 
 
@@ -1296,25 +1372,67 @@ async def handle_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     if user_id != os.getenv("TELEGRAM_MY_ID"):
         return
+    parts = []
+    if broker_enabled():
+        try:
+            request = await asyncio.to_thread(
+                broker_client.latest, "telegram", user_id, str(update.effective_chat.id)
+            )
+            if request:
+                route = request.get("route") or {}
+                title = " ".join(str(request.get("prompt_text") or "").split())[:180]
+                kind = "продолжение" if request.get("parent_request_id") else "новая ветка"
+                parts.append(
+                    f"Активная задача: {title}\n"
+                    f"Статус: {request.get('status', 'неизвестно')} · {kind}\n"
+                    f"Исполнитель: {route.get('provider') or route.get('execution_handler') or 'автоматически'}"
+                )
+        except broker_client.BrokerError as error:
+            log.warning("Cannot read active broker context: %s", error)
     artifact = get_active(user_id)
-    if not artifact:
-        await update.message.reply_text("Активного документа нет. Отправь файл в этот чат.")
-        return
+    if artifact:
+        parts.append(
+            f"Активный документ: {artifact.original_name}\n"
+            f"Размер: {artifact.size_bytes // 1024} КБ · хранение до {artifact.expires_at[:10]}"
+        )
     await update.message.reply_text(
-        f"Активный документ: {artifact.original_name}\nРазмер: {artifact.size_bytes // 1024} КБ\nХранение: до {artifact.expires_at[:10]}"
+        "\n\n".join(parts) if parts else "Активной задачи и документа нет. Напиши запрос или отправь файл."
     )
 
 
 async def handle_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_clear(update, context)
+    user_id = str(update.message.from_user.id)
+    if user_id != os.getenv("TELEGRAM_MY_ID"):
+        return
+    clear_pending(user_id)
+    try:
+        if broker_enabled():
+            await asyncio.to_thread(
+                broker_client.reset_session, "telegram", user_id, str(update.effective_chat.id)
+            )
+        save_message(user_id, "system", "Начата новая тема", "thread_reset")
+        await update.message.reply_text(
+            "Новая тема начата. Следующее сообщение станет отдельной задачей; старые результаты сохранены."
+        )
+    except broker_client.BrokerError as error:
+        log.warning("Cannot start a new broker topic: %s", error)
+        await update.message.reply_text("Не смог начать новую тему. Повтори /new через несколько секунд.")
 
 def main():
-    db.wait_ready("agents")  # на буте Postgres поднимается позже агента
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; launchd will retry Emilia")
+    init_db()
     text_chain = "Ollama → smart router (Codex/Claude by complexity)"
     vision_chain = f"Ollama {llm.LOCAL_VISION_MODEL}"
     log.info("AI Orchestrator запущен (LLM: %s; vision: %s)", text_chain, vision_chain)
     log.info("Поддержка: текст, голос, фото (vision), документы (pdf/docx/xlsx/txt), контекст проекта")
-    app = Application.builder().token(os.getenv("ORCHESTRATOR_BOT_TOKEN")).post_init(setup_orchestrator_commands).build()
+    app = (
+        Application.builder()
+        .token(os.getenv("ORCHESTRATOR_BOT_TOKEN"))
+        .concurrent_updates(4)
+        .post_init(setup_orchestrator_commands)
+        .build()
+    )
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("agents", handle_agents))

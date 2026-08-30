@@ -17,8 +17,10 @@ import urllib.request
 from pathlib import Path
 
 import artifact_store
+import db
 import orchestrator
 import request_store
+from memory import init_db
 
 
 WORKER_ID = os.getenv("AMORI_WORKER_ID", "mac-mini-primary")
@@ -157,13 +159,66 @@ def _attachment_refusal(answer: str) -> bool:
     return any(marker in normalized for marker in ATTACHMENT_REFUSAL_MARKERS)
 
 
+def _clip(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _execution_prompt(request: dict) -> str:
+    """Build a compact, auditable handoff instead of forwarding the whole chat."""
+    route = request.get("route") or {}
+    provider = str(route.get("provider") or "hermes")
+    is_continuation = bool(request.get("parent_request_id"))
+    needs_handoff = is_continuation or provider in {"codex", "claude"} or request.get("mode") == "act"
+    if not needs_handoff:
+        return str(request["prompt_text"])
+
+    previous = []
+    if is_continuation and request.get("thread_id"):
+        previous = request_store.list_thread_requests(
+            str(request["thread_id"]), before_request_id=str(request["id"]), limit=4
+        )
+    objective = previous[0]["prompt_text"] if previous else request["prompt_text"]
+    prior_lines = []
+    for item in previous[-3:]:
+        prior_lines.append(
+            f"- Уточнение: {_clip(item.get('prompt_text'), 900)}\n"
+            f"  Итог ({item.get('status')}): "
+            f"{_clip(item.get('result_text') or item.get('error_message') or 'результата пока нет', 1400)}"
+        )
+
+    outputs = ", ".join(str(item) for item in route.get("expected_outputs") or ["text"])
+    skills = ", ".join(str(item) for item in route.get("selected_skills") or []) or "определи по задаче"
+    action = (
+        "Выполни изменение, проверь результат и перечисли реально выполненные проверки."
+        if request.get("mode") == "act"
+        else "Дай проверенный, законченный ответ без выдуманных действий."
+    )
+    context = "\n".join(prior_lines) if prior_lines else "- Это первый шаг ветки; предыдущих результатов нет."
+    return (
+        "СТРУКТУРИРОВАННАЯ ПОСТАНОВКА AMORI\n\n"
+        f"Цель ветки:\n{_clip(objective, 1800)}\n\n"
+        f"Текущее сообщение пользователя:\n{_clip(request['prompt_text'], 2200)}\n\n"
+        f"Релевантный контекст этой ветки:\n{context}\n\n"
+        f"Ожидаемый результат: {outputs}.\n"
+        f"Подходящие навыки: {skills}.\n"
+        f"Рабочая папка: {request.get('cwd') or DEFAULT_CWD}.\n\n"
+        "Правила выполнения:\n"
+        f"- {action}\n"
+        "- Не проси пользователя повторять уже приведённый контекст.\n"
+        "- Не смешивай эту задачу с другими диалогами.\n"
+        "- Если создаёшь файлы, сохрани их в рабочей папке и укажи точные пути.\n"
+        "- Ответь на языке пользователя, кратко объяснив результат и ограничения."
+    )[:9000]
+
+
 def _router_call(request: dict, prompt: str | None = None) -> tuple[str, list]:
     route = request.get("route") or {}
     provider = route.get("provider", "hermes")
     cwd = Path(request.get("cwd") or DEFAULT_CWD).expanduser().resolve()
     if not cwd.is_dir():
         raise RuntimeError(f"Workspace does not exist: {cwd}")
-    effective_prompt = prompt or request["prompt_text"]
+    effective_prompt = prompt or _execution_prompt(request)
     attachment_sections = []
     for artifact_id in request.get("input_artifact_ids") or []:
         artifact = artifact_store.get_artifact(str(artifact_id))
@@ -375,6 +430,9 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; launchd will retry request worker")
+    init_db()
     while True:
         worked = run_once()
         if args.once:
