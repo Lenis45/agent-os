@@ -12,6 +12,7 @@ PY="${PYTHON:-$INFRA/.venv/bin/python}"
 CACHE_MAX_AGE="${DOCKER_BUILD_CACHE_MAX_AGE:-24h}"
 IMAGE_MAX_AGE="${DOCKER_IMAGE_CACHE_MAX_AGE:-168h}"
 MIN_FREE_GB="${STORAGE_MIN_FREE_GB:-20}"
+CRITICAL_FREE_GB="${STORAGE_CRITICAL_FREE_GB:-5}"
 STATUS_FILE="${STORAGE_STATUS_FILE:-$INFRA/agents/runtime/storage_maintenance.json}"
 UPDATE_PLIST="${MACOS_UPDATE_PLIST:-/System/Volumes/Update/Update.plist}"
 UPDATE_DIR="${MACOS_UPDATE_DIR:-/System/Volumes/Update}"
@@ -30,6 +31,12 @@ dir_size_gb() {
     return
   fi
   du -sk "$path" 2>/dev/null | awk '{printf "%d\n", ($1 + 1048575) / 1048576}'
+}
+
+clear_reproducible_dir() {
+  local path="$1"
+  [ -d "$path" ] || return 0
+  find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 }
 
 previous_action="$($PY - "$STATUS_FILE" <<'PY' 2>/dev/null || true
@@ -68,6 +75,15 @@ if [ "${after_docker:-0}" -lt "$MIN_FREE_GB" ]; then
   command -v uv >/dev/null 2>&1 && uv cache clean >/dev/null 2>&1 || true
   command -v npm >/dev/null 2>&1 && npm cache clean --force >/dev/null 2>&1 || true
   command -v brew >/dev/null 2>&1 && brew cleanup -s >/dev/null 2>&1 || true
+  command -v go >/dev/null 2>&1 && go clean -cache >/dev/null 2>&1 || true
+  clear_reproducible_dir "$HOME/.cache/uv"
+  clear_reproducible_dir "$HOME/Library/Developer/Xcode/DerivedData"
+
+  # Docker Desktop can leave a complete installer copy after an interrupted update.
+  docker_staging="$HOME/Library/Application Support/com.docker.install/in_progress"
+  if [ -d "$docker_staging" ] && find "$docker_staging" -maxdepth 0 -mtime +1 -print -quit | grep -q .; then
+    rm -rf -- "$docker_staging"
+  fi
 fi
 
 after="$(free_gb)"
@@ -144,7 +160,11 @@ os.chmod(temporary, 0o600)
 temporary.replace(path)
 PY
 
-if [ "$action" != "$previous_action" ] || [ "${STORAGE_NOTIFY_ALWAYS:-0}" = "1" ]; then
+critical_repeat=0
+if [ "${after:-0}" -lt "$CRITICAL_FREE_GB" ]; then
+  critical_repeat=1
+fi
+if [ "$action" != "$previous_action" ] || [ "${STORAGE_NOTIFY_ALWAYS:-0}" = "1" ] || [ "$critical_repeat" = "1" ]; then
   if [ "$action" = "reboot_required" ]; then
     message="На Mac Mini подготовлено обновление macOS (${update_gb}GB системных данных). Свободно ${after:-0}GB. Нужен обычный перезапуск Mac, чтобы завершить обновление и освободить место. Сервисы запустятся автоматически."
   elif [ "$action" = "low_space" ]; then

@@ -71,6 +71,26 @@ make storage-maintenance                           # безопасно: вос�
 Контейнеры, используемые образы, volumes, базы, Ollama-модели, пользовательские файлы
 и backup-архивы не удаляются.
 
+При свободном месте ниже 20 ГБ дополнительно очищаются только пересоздаваемые
+`Xcode/DerivedData`, Go/uv/package-manager кэши и зависшая более суток копия
+установщика Docker. `iOS DeviceSupport`, Docker volumes, модели Ollama, Claude VM,
+Codex-сессии, проекты и пользовательские файлы автоматически не удаляются. Если
+в статусе указано `reboot_required`, перезагрузка завершает уже подготовленное
+обновление macOS и освобождает системные Update/Cryptex-файлы и накопленный swap.
+
+На Mac Mini с 16 ГБ RAM две копии product backend не должны работать постоянно
+вместе с AI-командой. Они переведены в режим по требованию; данные и volumes при
+остановке сохраняются:
+
+```bash
+make dev-stacks-status  # amori-new, amori-local, hypothesis_hub
+make dev-stacks-start   # включить перед тестированием приложения
+make dev-stacks-stop    # выключить после тестирования и вернуть около 4-5 ГБ RAM
+```
+
+`ai-infra` и `amori-growth` этими командами не затрагиваются: Emilia, broker,
+SMM-отдел, Postgres, Redis, Qdrant, Langfuse и n8n продолжают работать.
+
 Если в статусе указано `action=reboot_required`, место занимает подготовленное
 обновление macOS. Не удаляйте вручную `/System/Volumes/Update`, Preboot или APFS
 snapshots: выполните обычный перезапуск, чтобы система завершила обновление и сама

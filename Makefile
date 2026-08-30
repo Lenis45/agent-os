@@ -1,6 +1,6 @@
 PYTHON ?= $(if $(wildcard .venv/bin/python),$(CURDIR)/.venv/bin/python,/opt/anaconda3/bin/python3)
 
-.PHONY: bootstrap-runtime doctor security-check dependency-audit test audit llm-report model-eval backup restore-test storage-maintenance release-check
+.PHONY: bootstrap-runtime doctor security-check dependency-audit test audit llm-report model-eval backup restore-test storage-maintenance dev-stacks-start dev-stacks-stop dev-stacks-status release-check
 
 bootstrap-runtime:
 	/opt/anaconda3/bin/python3 -m venv --clear .venv
@@ -41,6 +41,15 @@ restore-test:
 
 storage-maintenance:
 	bash scripts/storage_maintenance.sh
+
+dev-stacks-start:
+	bash scripts/dev_stacks.sh start
+
+dev-stacks-stop:
+	bash scripts/dev_stacks.sh stop
+
+dev-stacks-status:
+	bash scripts/dev_stacks.sh status
 
 release-check: doctor security-check dependency-audit test audit
 	docker compose config --quiet
