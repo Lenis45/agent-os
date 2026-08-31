@@ -7,12 +7,13 @@ from datetime import datetime, timedelta
 from memory import remember, save_digest, get_recent_digests, get_team_prompt, init_db
 
 import notify
+import db
 import llm
+import ops_store
 from applog import get_logger
 from retry import safe
 
 load_dotenv()
-init_db()
 log = get_logger("chief_of_staff")
 
 tg = TelegramClient(
@@ -180,10 +181,22 @@ async def run():
 
     header = (f"📋 Chief of Staff | {period.upper()} ДАЙДЖЕСТ\n{now_str}\n\n"
               f"{stats_block}\n")
-    if notify.send(header + result_str):
+    delivered = notify.send(header + result_str)
+    if delivered:
         log.info("Готово")
     else:
         log.warning("Дайджест сформирован, но Telegram-доставка не подтверждена")
+    safe(
+        ops_store.heartbeat,
+        "chief_of_staff",
+        "ok" if delivered else "warn",
+        {"period": period, "delivered": delivered},
+        label="chief heartbeat",
+        logger=log,
+    )
 
 if __name__ == "__main__":
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; scheduler will retry chief of staff")
+    init_db()
     asyncio.run(run())

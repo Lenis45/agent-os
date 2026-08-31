@@ -13,7 +13,6 @@ import agent_contracts
 from applog import get_logger
 
 load_dotenv()
-init_db()
 log = get_logger("email_agent")
 
 def get_db():
@@ -188,6 +187,9 @@ def send_bulk(email_type: str = "intro", status_filter: str = "new", limit: int 
 
 if __name__ == "__main__":
     import sys
+    if not db.wait_ready("agents") or not db.wait_ready("customer_db"):
+        raise RuntimeError("Postgres is unavailable; email command can be retried")
+    init_db()
     if len(sys.argv) >= 3 and sys.argv[1] == "send":
         lead_id = int(sys.argv[2])
         email_type = sys.argv[3] if len(sys.argv) > 3 else "intro"

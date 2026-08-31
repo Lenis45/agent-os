@@ -7,8 +7,6 @@ runtime_bootstrap.ensure_isolated_runtime()
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
 import hashlib
 
 import db
@@ -19,18 +17,6 @@ from applog import get_logger
 
 load_dotenv()
 log = get_logger("task_sync")
-
-qdrant = QdrantClient(host="localhost", port=6333)
-COLLECTION = "project_knowledge"
-
-# Создаём коллекцию если нет
-try:
-    qdrant.get_collection(COLLECTION)
-except:
-    qdrant.create_collection(
-        collection_name=COLLECTION,
-        vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-    )
 
 def get_db():
     return db.connect("agents")
@@ -422,6 +408,8 @@ agent = llm.build_agent(
 )
 
 def run():
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; scheduler will retry task sync")
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
     now = datetime.now()
     log.info("Task Sync запущен")
@@ -434,7 +422,14 @@ def run():
     all_tasks = weeek_tasks + taiga_tasks
 
     if not all_tasks:
-        notify.send(f"Task Sync | {now_str}\nНе удалось получить задачи.")
+        delivered = notify.send(f"Task Sync | {now_str}\nНе удалось получить задачи.")
+        ops_store.record_run(
+            "task_sync", "warn", {"tasks": 0, "delivered": delivered}
+        )
+        ops_store.heartbeat(
+            "task_sync", "warn", {"tasks": 0, "delivered": delivered}
+        )
+        log.warning("Task Sync не получил задачи из WEEEK/Taiga")
         return
 
     print(f"Всего задач: {len(all_tasks)}")
@@ -460,6 +455,11 @@ def run():
         ops_store.record_run(
             "task_sync",
             "unchanged" if delivered else "partial",
+            {"llm_skipped": True, "tasks": len(all_tasks), "delivered": delivered},
+        )
+        ops_store.heartbeat(
+            "task_sync",
+            "ok" if delivered else "warn",
             {"llm_skipped": True, "tasks": len(all_tasks), "delivered": delivered},
         )
         log.info("Задачи не изменились: LLM-вызов пропущен")
@@ -579,10 +579,16 @@ Taiga [разработка]: X/Y завершено (Z%)
         ops_store.record_run(
             "task_sync", "ok", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": True}
         )
+        ops_store.heartbeat(
+            "task_sync", "ok", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": True}
+        )
         log.info("Отчёт отправлен в Telegram")
     else:
         ops_store.record_run(
             "task_sync", "partial", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": False}
+        )
+        ops_store.heartbeat(
+            "task_sync", "warn", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": False}
         )
         log.warning("Отчёт сформирован, но Telegram-доставка не подтверждена")
 

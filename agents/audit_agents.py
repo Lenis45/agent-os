@@ -85,6 +85,16 @@ def _heartbeats():
     return {component: {"status": status, "last_seen": last_seen} for component, status, last_seen in rows}
 
 
+def _fresh_ok_heartbeat(heartbeat, *, now=None):
+    if heartbeat.get("status") != "ok" or not heartbeat.get("last_seen"):
+        return False
+    current = now or datetime.now(timezone.utc)
+    last_seen = heartbeat["last_seen"]
+    if current.tzinfo and not last_seen.tzinfo:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return current - last_seen <= timedelta(hours=LOG_ERROR_WINDOW_HOURS)
+
+
 def _log_findings(log_name, *, now=None):
     if not log_name:
         return []
@@ -129,9 +139,18 @@ def audit():
         status = "ok"
         if hb.get("status") in {"warn", "fail", "critical"}:
             status = "needs_attention"
-        elif report_issues or any(x in log_issues for x in ("Traceback", "CRITICAL", "invalid_grant")):
+        elif report_issues:
             status = "needs_attention"
-        elif log_issues and not (meta["kind"] == "on-demand" and log_issues == [f"log missing: {meta.get('log')}"]):
+        elif (
+            any(x in log_issues for x in ("Traceback", "CRITICAL", "invalid_grant"))
+            and not _fresh_ok_heartbeat(hb)
+        ):
+            status = "needs_attention"
+        elif (
+            log_issues
+            and not _fresh_ok_heartbeat(hb)
+            and not (meta["kind"] == "on-demand" and log_issues == [f"log missing: {meta.get('log')}"])
+        ):
             status = "warn"
         rows.append({
             "agent": key,

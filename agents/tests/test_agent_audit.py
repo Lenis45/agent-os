@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import audit_agents
 
@@ -33,3 +33,17 @@ def test_log_audit_reports_recent_traceback(tmp_path):
 
     assert "Traceback" in findings
     assert "Connection refused" in findings
+
+
+def test_fresh_ok_heartbeat_marks_recovery():
+    now = datetime.now(timezone.utc)
+
+    assert audit_agents._fresh_ok_heartbeat(
+        {"status": "ok", "last_seen": now - timedelta(minutes=5)}, now=now
+    )
+    assert not audit_agents._fresh_ok_heartbeat(
+        {"status": "warn", "last_seen": now - timedelta(minutes=5)}, now=now
+    )
+    assert not audit_agents._fresh_ok_heartbeat(
+        {"status": "ok", "last_seen": now - timedelta(hours=25)}, now=now
+    )

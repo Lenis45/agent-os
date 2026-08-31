@@ -364,6 +364,25 @@ def log_age_hours(label):
     return newest
 
 
+def heartbeat_age_hours(label):
+    """Возраст heartbeat агента; ручной успешный запуск тоже считается активностью."""
+    if not OPS:
+        return None
+    component = label.replace(".", "_")
+    try:
+        with ops_store.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT EXTRACT(EPOCH FROM (now() - last_seen)) / 3600 "
+                    "FROM infra_heartbeats WHERE component=%s",
+                    (component,),
+                )
+                row = cur.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
 def check_containers():
     for c in CONTAINERS:
         if container_running(c):
@@ -394,7 +413,8 @@ def check_agents():
         if kind == "longrun" and not pid:
             warn.append(f"⚠️ агент {label} загружен, но без PID (не выполняется)")
         if kind == "sched" and max_age:
-            age = log_age_hours(label)
+            ages = [age for age in (log_age_hours(label), heartbeat_age_hours(label)) if age is not None]
+            age = min(ages) if ages else None
             if age is not None and age > max_age:
                 warn.append(f"⚠️ агент {label} молчит {age:.0f}ч (ожидалось <{max_age}ч)")
         ok.append(f"agent {label}")

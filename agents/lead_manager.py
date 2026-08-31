@@ -15,11 +15,11 @@ import db
 import notify
 import llm
 import agent_contracts
+import ops_store
 from applog import get_logger
 from retry import safe
 
 load_dotenv()
-init_db()
 log = get_logger("lead_manager")
 SURVEY_ROW_RE = re.compile(r"\[survey_row=(\d+)\]")
 
@@ -567,8 +567,10 @@ def parse_lead_from_text(text: str) -> dict:
 
 def run_followup_check():
     """Проверяем кому нужен follow-up"""
+    log.info("Lead follow-up запущен")
     due = get_followups_due()
     if not due:
+        ops_store.heartbeat("lead_manager", "ok", {"mode": "followup", "due": 0})
         return
 
     now_str = datetime.now().strftime("%d.%m.%Y")
@@ -585,7 +587,13 @@ def run_followup_check():
         msg += "\n"
 
     msg += f"Всего: {len(due)} лидов требуют внимания"
-    notify.send(msg)
+    delivered = notify.send(msg)
+    ops_store.heartbeat(
+        "lead_manager",
+        "ok" if delivered else "warn",
+        {"mode": "followup", "due": len(due), "delivered": delivered},
+    )
+    log.info("Отчёт follow-up отправлен" if delivered else "Отчёт follow-up не доставлен")
 
 def _ai_recommendation(stats: dict) -> str:
     """Краткая AI-рекомендация по лидам (2-3 действия). Не валит отчёт при сбое."""
@@ -606,6 +614,7 @@ def _ai_recommendation(stats: dict) -> str:
 def run_leads_report():
     """Ежедневный отчёт по лидам — расширенный: динамика, горячие, follow-up, зависшие,
     конверсия по источникам, b2b/b2c и AI-рекомендация."""
+    log.info("Lead Manager запущен")
     conn = get_db()
     cur = conn.cursor()
 
@@ -708,10 +717,19 @@ def run_leads_report():
     if rec:
         msg += f"\n━━━ 💡 РЕКОМЕНДАЦИЯ ━━━\n{rec}\n"
 
-    notify.send(msg)
+    delivered = notify.send(msg)
+    ops_store.heartbeat(
+        "lead_manager",
+        "ok" if delivered else "warn",
+        {"mode": "report", "delivered": delivered},
+    )
+    log.info("Отчёт по лидам отправлен" if delivered else "Отчёт по лидам не доставлен")
 
 if __name__ == "__main__":
     import sys
+    if not db.wait_ready("agents") or not db.wait_ready("customer_db"):
+        raise RuntimeError("Postgres is unavailable; scheduler will retry lead manager")
+    init_db()
     if len(sys.argv) > 1:
         if sys.argv[1] == "report":
             run_leads_report()

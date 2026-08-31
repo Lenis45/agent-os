@@ -14,7 +14,6 @@ from bot_commands import command_menu_text, set_application_commands
 from telegram_runtime import install_error_handler
 
 load_dotenv()
-init_db()
 log = get_logger("knowledge_curator")
 
 VAULT = os.getenv("OBSIDIAN_VAULT")
@@ -250,7 +249,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_text_message(message, text)
 
 def main():
-    db.wait_ready("agents")  # на буте Postgres поднимается позже агента
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; launchd will retry knowledge curator")
+    init_db()
     log.info("Knowledge Curator + Context Translator запущен")
     app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).post_init(setup_secretary_commands).build()
     app.add_handler(CommandHandler("start", handle_start))

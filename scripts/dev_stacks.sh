@@ -16,8 +16,8 @@ for project in "${PROJECTS[@]}"; do
   ids=()
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    policy="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$id")"
-    [ "$policy" = "no" ] || ids+=("$id")
+    service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
+    [[ "$service" == *setup ]] || ids+=("$id")
   done < <(docker ps -aq --filter "label=com.docker.compose.project=$project")
 
   if [ "${#ids[@]}" -eq 0 ]; then
@@ -27,12 +27,14 @@ for project in "${PROJECTS[@]}"; do
 
   case "$ACTION" in
     start)
+      docker update --restart unless-stopped "${ids[@]}" >/dev/null
       docker start "${ids[@]}" >/dev/null
       echo "[dev-stacks] $project: started (${#ids[@]})"
       ;;
     stop)
+      docker update --restart no "${ids[@]}" >/dev/null
       docker stop -t 30 "${ids[@]}" >/dev/null
-      echo "[dev-stacks] $project: stopped (${#ids[@]}); volumes preserved"
+      echo "[dev-stacks] $project: stopped (${#ids[@]}); autostart disabled; volumes preserved"
       ;;
     status)
       running="$(docker ps -q --filter "label=com.docker.compose.project=$project" | wc -l | tr -d ' ')"

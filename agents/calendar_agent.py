@@ -26,7 +26,6 @@ import ops_store
 from applog import get_logger
 
 load_dotenv()
-init_db()
 log = get_logger("calendar_agent")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -857,6 +856,10 @@ EMAIL (последние 3 дня):
     log.info("Отчёт отправлен" if delivered else "Отчёт не доставлен")
 
 if __name__ == "__main__":
+    import db
+    if not db.wait_ready("agents"):
+        raise RuntimeError("Postgres is unavailable; scheduler will retry calendar agent")
+    init_db()
     parser = argparse.ArgumentParser(description="Amori Calendar Manager")
     parser.add_argument("--add", help="Добавить событие из естественного текста")
     parser.add_argument("--digest", action="store_true", help="Отправить недельный дайджест календаря")

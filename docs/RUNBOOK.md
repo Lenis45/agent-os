@@ -85,7 +85,7 @@ Codex-сессии, проекты и пользовательские файл�
 ```bash
 make dev-stacks-status  # amori-new, amori-local, hypothesis_hub
 make dev-stacks-start   # включить перед тестированием приложения
-make dev-stacks-stop    # выключить после тестирования и вернуть около 4-5 ГБ RAM
+make dev-stacks-stop    # выключить, запретить автостарт и вернуть около 4-5 ГБ RAM
 ```
 
 `ai-infra` и `amori-growth` этими командами не затрагиваются: Emilia, broker,

@@ -229,3 +229,21 @@ def test_monitor_sends_one_recovery_message(monkeypatch, tmp_path):
     assert len(sent) == 2
     assert "Система восстановлена" in sent[1][0]
     assert sent[1][1] == "ok"
+
+
+def test_scheduled_agent_accepts_fresh_heartbeat_when_log_is_stale(monkeypatch):
+    infra_monitor.ok.clear()
+    infra_monitor.warn.clear()
+    monkeypatch.setattr(
+        infra_monitor,
+        "AGENTS",
+        {"chief.of.staff": ("sched", 14)},
+    )
+    monkeypatch.setattr(infra_monitor, "launchd_state", lambda _label: (True, None))
+    monkeypatch.setattr(infra_monitor, "log_age_hours", lambda _label: 21.0)
+    monkeypatch.setattr(infra_monitor, "heartbeat_age_hours", lambda _label: 0.1)
+
+    infra_monitor.check_agents()
+
+    assert not infra_monitor.warn
+    assert "agent chief.of.staff" in infra_monitor.ok

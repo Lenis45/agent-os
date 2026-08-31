@@ -20,7 +20,6 @@ from telegram_format import normalize_plain_text
 from telegram_runtime import install_error_handler
 
 load_dotenv()
-init_db()
 log = get_logger("support_agent")
 
 def get_db():
@@ -443,9 +442,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 def main():
-    db.wait_ready("customer_db")  # на буте Postgres поднимается позже агента
+    if not db.wait_ready("agents") or not db.wait_ready("customer_db"):
+        raise RuntimeError("Postgres is unavailable; launchd will retry support agent")
+    init_db()
     init_support_db()
-    print("Support Agent запущен...")
+    log.info("Support Agent запущен")
 
     app = Application.builder().token(SUPPORT_TOKEN).post_init(setup_support_commands).build()
     app.add_handler(CommandHandler("start", cmd_start))
