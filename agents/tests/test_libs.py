@@ -90,6 +90,7 @@ def test_task_sync_skips_llm_when_source_data_is_unchanged(monkeypatch):
         task_sync.ops_store, "get_automation_state", lambda *_args: {"fingerprint": fingerprint}
     )
     monkeypatch.setattr(task_sync.ops_store, "record_run", lambda *args: runs.append(args))
+    monkeypatch.setattr(task_sync.ops_store, "heartbeat", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(task_sync.notify, "send", lambda message: sent.append(message) or True)
     monkeypatch.setattr(
         task_sync.llm, "run", lambda *_args: (_ for _ in ()).throw(AssertionError("LLM called"))
