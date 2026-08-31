@@ -17,7 +17,7 @@ security-check:
 dependency-audit:
 	@test -x .venv/bin/python || (echo "Missing .venv; run make bootstrap-runtime"; exit 1)
 	.venv/bin/python scripts/verify_praison_approval.py
-	.venv/bin/python -m pip_audit --path .venv/lib/python3.12/site-packages --progress-spinner off --ignore-vuln PYSEC-2026-2946
+	.venv/bin/python -m pip_audit --timeout 60 --path .venv/lib/python3.12/site-packages --progress-spinner off --ignore-vuln PYSEC-2026-2946
 	.venv/bin/python -m bandit -r agents dashboard scripts mcp/server.py -x agents/tests,mcp/.venv -q -lll -ii
 
 test:
