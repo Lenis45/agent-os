@@ -249,6 +249,38 @@ def test_document_text_is_embedded_and_refusal_falls_back(monkeypatch, tmp_path)
     assert any(item["type"] == "model_fallback" for item in evidence)
 
 
+def test_local_reasoning_leak_falls_back_before_user_delivery(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_model_call(provider, _prompt, _request, _cwd):
+        calls.append(provider)
+        if provider == "hermes":
+            return (
+                "Хорошо, пользователь попросил проверить систему. "
+                "Нужно понять детали и по инструкции выбрать правильный ответ.",
+                [],
+            )
+        return "Система проверена. Критических ошибок нет.", [
+            {"type": "model_result", "provider": provider}
+        ]
+
+    monkeypatch.setattr(broker_worker, "_model_call", fake_model_call)
+    monkeypatch.setattr(broker_worker.request_store, "append_event", lambda *_args: None)
+
+    answer, evidence = broker_worker._router_call({
+        "id": "request-reasoning",
+        "actor_id": "denis",
+        "prompt_text": "Проверь систему",
+        "input_artifact_ids": [],
+        "cwd": str(tmp_path),
+        "route": {"provider": "hermes"},
+    })
+
+    assert answer == "Система проверена. Критических ошибок нет."
+    assert calls == ["hermes", "claude"]
+    assert any(item["type"] == "model_fallback" for item in evidence)
+
+
 def test_explicit_side_effect_requires_action_mode():
     assert orchestrator.infer_request_mode("Проанализируй договор и выпиши риски") == "ask"
     assert orchestrator.infer_request_mode("Добавь встречу завтра в 10:00") == "act"

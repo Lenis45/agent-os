@@ -17,6 +17,7 @@ import urllib.request
 from pathlib import Path
 
 import artifact_store
+import agent_contracts
 import db
 import orchestrator
 import request_store
@@ -159,6 +160,11 @@ def _attachment_refusal(answer: str) -> bool:
     return any(marker in normalized for marker in ATTACHMENT_REFUSAL_MARKERS)
 
 
+def _reasoning_leak(answer: str) -> bool:
+    """Reject untagged model deliberation at the final user-facing boundary."""
+    return agent_contracts.internal_reasoning_leak(answer)
+
+
 def _clip(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
@@ -241,6 +247,19 @@ def _router_call(request: dict, prompt: str | None = None) -> tuple[str, list]:
             + "\n\n".join(attachment_sections)
         )
     answer, evidence = _model_call(provider, effective_prompt, request, cwd)
+    if _reasoning_leak(answer):
+        if provider != "hermes":
+            raise RuntimeError("Selected model exposed internal reasoning")
+        request_store.append_event(
+            str(request["id"]), "running",
+            "Локальная модель не сформировала итог; передаю Claude/Codex", 55,
+        )
+        fallback_answer, fallback_evidence = _model_call("claude", effective_prompt, request, cwd)
+        if _reasoning_leak(fallback_answer):
+            raise RuntimeError("Fallback model exposed internal reasoning")
+        evidence.append({"type": "model_fallback", "from": provider, "to": "claude"})
+        evidence.extend(fallback_evidence)
+        answer = fallback_answer
     if attachment_sections and _attachment_refusal(answer):
         if provider != "hermes":
             raise RuntimeError("Selected model did not process the extracted document text")

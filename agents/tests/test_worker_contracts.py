@@ -163,6 +163,15 @@ def test_report_audit_flags_fake_publication_and_product_claim():
     assert "unsupported_product_claim:real-time location" in issues
 
 
+def test_report_audit_flags_internal_reasoning_leak():
+    issues = audit_agent_outputs._hits(
+        "Хорошо, пользователь попросил проверить систему. "
+        "Нужно понять детали и по инструкции выбрать правильный ответ."
+    )
+
+    assert "internal_reasoning" in issues
+
+
 def test_content_factory_does_not_mark_unconfigured_channel_as_real_publish(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CHANNEL_ID", raising=False)
     result, info = content_factory._do_publish("telegram", {"body": "hello"})

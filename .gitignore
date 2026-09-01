@@ -8,6 +8,7 @@ agents/token.json.*
 agents/private_backups/
 agents/*.session
 *.session
+*.session-journal
 *.env*
 !*.env.example
 !agents/.env.example

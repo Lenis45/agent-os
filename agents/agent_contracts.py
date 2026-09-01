@@ -13,11 +13,35 @@ EXTERNAL_ACTION_PATTERNS = {
     "sent": re.compile(r"\b(отправил[аи]?|письмо\s+отправлен[оа]?|рассылка\s+запущен[а]?)\b", re.I),
     "implemented": re.compile(r"\b(внедрил[аи]?|исправил[аи]?\s+в\s+коде|изменения\s+применены|протестировал[аи]?)\b", re.I),
 }
+INTERNAL_REASONING_PREFIXES = (
+    "хорошо, пользователь попросил",
+    "хорошо, мне нужно",
+    "пользователь попросил",
+    "мне нужно ответить на вопрос пользователя",
+)
+INTERNAL_REASONING_MARKERS = (
+    "нужно понять, что именно",
+    "я должен ответить",
+    "по инструкции",
+    "правильный ответ",
+    "итоговый ответ",
+    "пользователь хочет, чтобы я",
+    "согласно инструк",
+)
+
+
+def internal_reasoning_leak(text: str) -> bool:
+    normalized = " ".join(str(text or "").casefold().split())
+    if normalized.startswith(INTERNAL_REASONING_PREFIXES):
+        return True
+    return sum(marker in normalized for marker in INTERNAL_REASONING_MARKERS) >= 2
 
 
 def output_issues(text: str) -> list[str]:
     issues = [f"unsupported_product_claim:{x}" for x in llm.unsupported_product_claims(text)]
     s = str(text or "")
+    if internal_reasoning_leak(s):
+        issues.append("internal_reasoning")
     for label, pattern in EXTERNAL_ACTION_PATTERNS.items():
         if pattern.search(s):
             issues.append(f"unverified_external_action:{label}")

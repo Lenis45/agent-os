@@ -42,6 +42,32 @@ def audit(limit: int = 50, include_legacy: bool = False) -> list[dict]:
                 "issues": issues,
                 "sample": text.replace("\n", " ")[:280],
             })
+    requests = db.query(
+        """
+        SELECT id::text, source, COALESCE(prompt_text,''), COALESCE(result_text,''),
+               to_char(created_at,'YYYY-MM-DD HH24:MI')
+        FROM smart_requests
+        WHERE status IN ('completed','partial') AND result_text <> ''
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+        dbname="ops_db",
+    )
+    for request_id, source, prompt, result, ts in requests:
+        # Smart requests are general-purpose answers; product-claim rules only
+        # apply to marketing reports. Here we specifically guard user-facing CoT.
+        issues = ["internal_reasoning"] if agent_contracts.internal_reasoning_leak(result) else []
+        if issues:
+            findings.append({
+                "id": request_id,
+                "ts": ts,
+                "agent": f"request_broker:{source}",
+                "kind": "smart_request",
+                "title": prompt.replace("\n", " ")[:120],
+                "issues": issues,
+                "sample": result.replace("\n", " ")[:280],
+            })
     return findings
 
 
@@ -54,7 +80,7 @@ def main():
     if not findings:
         print(f"OK: последние {args.limit} отчётов без известных риск-паттернов")
         return
-    print(f"Найдено рискованных отчётов: {len(findings)} / {args.limit}")
+    print(f"Найдено рискованных результатов: {len(findings)}")
     for f in findings:
         print(f"- #{f['id']} {f['ts']} {f['agent']} [{', '.join(f['issues'])}] {f['title']}")
         print(f"  {f['sample']}")
