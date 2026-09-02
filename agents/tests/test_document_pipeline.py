@@ -121,3 +121,20 @@ def test_active_document_is_added_only_for_file_followup(monkeypatch, tmp_path):
 
     assert "Срок оплаты" in orchestrator._active_artifact_context("user-1", "Что по этому договору?")
     assert orchestrator._active_artifact_context("user-1", "Какая сегодня погода?") == ""
+
+
+def test_personal_assistant_context_does_not_make_amori_the_only_system():
+    assert "Ami" in orchestrator.PROJECT_BRIEF
+    assert "один из проектов" in orchestrator.PROJECT_BRIEF
+
+
+def test_telegram_reply_blocks_untagged_internal_reasoning():
+    leaked = (
+        "Хорошо, пользователь попросил проверить систему. "
+        "Нужно понять, что именно он хочет, и по инструкции выбрать правильный ответ."
+    )
+
+    result = orchestrator.normalize_telegram_reply(leaked)
+
+    assert "пользователь попросил" not in result.lower()
+    assert "готовый ответ" in result.lower()

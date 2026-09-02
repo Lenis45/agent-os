@@ -71,6 +71,56 @@ def test_api_returns_persisted_request(monkeypatch):
     assert response.json()["request"]["status"] == "queued"
 
 
+def test_worker_claim_includes_bounded_attachment_context(monkeypatch, tmp_path):
+    extracted = tmp_path / "extracted.txt"
+    extracted.write_text("Код проекта: ORCHID-742", encoding="utf-8")
+    artifact = SimpleNamespace(
+        owner="denis",
+        original_name="brief.pdf",
+        mime_type="application/pdf",
+        extracted_text_path=str(extracted),
+    )
+    claimed = {
+        "id": "r1",
+        "actor_id": "denis",
+        "input_artifact_ids": ["artifact-1"],
+    }
+    monkeypatch.setenv("AMORI_BROKER_TOKEN", "test-token")
+    monkeypatch.setattr(request_broker.request_store, "requeue_expired_leases", lambda: 0)
+    monkeypatch.setattr(request_broker.request_store, "claim_request", lambda *_args: claimed)
+    monkeypatch.setattr(request_broker.artifact_store, "get_artifact", lambda _artifact_id: artifact)
+    client = TestClient(request_broker.app)
+
+    response = client.post(
+        "/v1/workers/claim",
+        headers={"Authorization": "Bearer test-token"},
+        json={"worker_id": "worker", "device": "macbook", "capabilities": ["ollama"]},
+    )
+
+    assert response.status_code == 200
+    context = response.json()["request"]["attachment_context"]
+    assert "brief.pdf" in context
+    assert "ORCHID-742" in context
+    assert "instructions" in context.lower()
+
+
+def test_attachment_context_rejects_artifact_from_another_owner(monkeypatch):
+    artifact = SimpleNamespace(
+        owner="someone-else",
+        original_name="private.txt",
+        mime_type="text/plain",
+        extracted_text_path="/tmp/private.txt",
+    )
+    monkeypatch.setattr(request_broker.artifact_store, "get_artifact", lambda _artifact_id: artifact)
+
+    context = request_broker._attachment_context({
+        "actor_id": "denis",
+        "input_artifact_ids": ["artifact-1"],
+    })
+
+    assert context == ""
+
+
 def test_worker_artifact_rejects_owner_mismatch(monkeypatch, tmp_path):
     monkeypatch.setenv("AMORI_BROKER_TOKEN", "test-token")
     monkeypatch.setattr(
