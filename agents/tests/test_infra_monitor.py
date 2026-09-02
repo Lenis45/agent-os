@@ -117,24 +117,14 @@ def test_telegram_recovery_resets_transient_failure_streak(monkeypatch, tmp_path
 def test_telegram_probe_retries_transient_network_error(monkeypatch):
     calls = {"count": 0}
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def urlopen(_request, timeout):
+    def post_json(_url, _payload, timeout):
         calls["count"] += 1
         if calls["count"] == 1:
             raise TimeoutError("temporary VPN route failure")
-        return Response()
+        return {"ok": True}
 
     monkeypatch.setenv("ORCHESTRATOR_BOT_TOKEN", "configured")
-    monkeypatch.setattr(infra_monitor.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(infra_monitor, "post_json_ipv4", post_json)
     monkeypatch.setattr(infra_monitor.time, "sleep", lambda _seconds: None)
 
     available, reason = infra_monitor.telegram_bot_ok("ORCHESTRATOR_BOT_TOKEN")

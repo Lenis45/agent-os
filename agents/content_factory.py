@@ -19,12 +19,12 @@ CLI:
 import os
 import sys
 import json
-import urllib.request
 
 import ops_store
 import notify
 import report as report_mod
 import worker_handlers
+from telegram_runtime import post_json_ipv4
 
 CHANNELS = {"telegram", "vk", "email", "landing", "ad"}
 KINDS = {"post", "email", "ad_creative", "landing"}
@@ -241,10 +241,7 @@ def _do_publish(channel, item):
         if chan and token:
             try:
                 url = f"https://api.telegram.org/bot{token}/sendMessage"
-                data = json.dumps({"chat_id": chan, "text": body[:4000]}).encode()
-                req = urllib.request.Request(url, data=data,
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=10)
+                post_json_ipv4(url, {"chat_id": chan, "text": body[:4000]}, timeout=10)
                 return "sent", f"отправлено в Telegram-канал {chan}"
             except Exception as e:
                 return "failed", f"ошибка публикации в TG: {e}"

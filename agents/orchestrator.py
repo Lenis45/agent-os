@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
-import urllib.request
 import concurrent.futures
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 from memory import get_db, get_team_prompt, init_db, remember
@@ -24,7 +23,7 @@ from bot_commands import command_menu_text, set_application_commands
 from document_pipeline import ExtractionResult, extract_document
 from intent_policy import validate_tool_decision
 from telegram_format import normalize_plain_text
-from telegram_runtime import install_error_handler
+from telegram_runtime import install_error_handler, post_json_ipv4, telegram_http_request
 
 load_dotenv()
 log = get_logger("orchestrator")
@@ -949,13 +948,11 @@ def send_msg(text: str, chat_id: str = None) -> bool:
     ok = True
     for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = json.dumps({"chat_id": cid, "text": chunk}).encode()
+        data = {"chat_id": cid, "text": chunk}
         delivered = False
         for attempt in range(3):
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                payload = post_json_ipv4(url, data, timeout=20)
                 if payload.get("ok"):
                     delivered = True
                     break
@@ -1467,6 +1464,8 @@ def main():
     app = (
         Application.builder()
         .token(os.getenv("ORCHESTRATOR_BOT_TOKEN"))
+        .request(telegram_http_request())
+        .get_updates_request(telegram_http_request(polling=True))
         .concurrent_updates(4)
         .post_init(setup_orchestrator_commands)
         .build()

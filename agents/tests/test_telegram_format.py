@@ -54,23 +54,13 @@ def test_normalize_plain_text_drops_unfinished_provider_reasoning():
 def test_notify_send_normalizes_body_before_telegram(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"ok": true, "result": {"message_id": 1, "chat": {"id": 123, "type": "private"}}}'
-
-    def fake_urlopen(req, timeout):
-        captured["payload"] = json.loads(req.data.decode("utf-8"))
-        return FakeResponse()
+    def fake_post(_url, payload, timeout):
+        captured["payload"] = payload
+        return {"ok": True, "result": {"message_id": 1, "chat": {"id": 123, "type": "private"}}}
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_MY_ID", "123")
-    monkeypatch.setattr(notify.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(notify, "post_json_ipv4", fake_post)
 
     assert notify.send("### Заголовок\n**Важно:** проверить `token.json`") is True
 

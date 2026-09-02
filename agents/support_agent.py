@@ -6,7 +6,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
-import urllib.request
 import concurrent.futures
 from memory import init_db, remember, recall
 
@@ -17,7 +16,7 @@ import notify
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
 from telegram_format import normalize_plain_text
-from telegram_runtime import install_error_handler
+from telegram_runtime import install_error_handler, post_json_ipv4, telegram_http_request
 
 load_dotenv()
 log = get_logger("support_agent")
@@ -246,10 +245,8 @@ def notify_denis(ticket_id: int, customer_name: str, message: str, is_escalation
 def send_to_customer(customer_id: str, text: str):
     token = SUPPORT_TOKEN
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = json.dumps({"chat_id": customer_id, "text": text}).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
+        post_json_ipv4(url, {"chat_id": customer_id, "text": text})
     except Exception as e:
         log.warning(f"Send error: {e}")
 
@@ -448,7 +445,12 @@ def main():
     init_support_db()
     log.info("Support Agent запущен")
 
-    app = Application.builder().token(SUPPORT_TOKEN).post_init(setup_support_commands).build()
+    app = (
+        Application.builder().token(SUPPORT_TOKEN)
+        .request(telegram_http_request())
+        .get_updates_request(telegram_http_request(polling=True))
+        .post_init(setup_support_commands).build()
+    )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))

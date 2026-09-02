@@ -11,10 +11,9 @@ notify — единая точка отправки уведомлений (Tele
 import os
 import sys
 import time
-import json
-import urllib.request
 
 from telegram_format import normalize_plain_text
+from telegram_runtime import post_json_ipv4
 
 try:
     from dotenv import load_dotenv
@@ -39,14 +38,12 @@ def send(text: str, level: str = "info") -> bool:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     ok = True
     for chunk in chunks:
-        data = json.dumps({"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}).encode()
+        data = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
         sent = False
         # Ретрай: транзиентные TLS-сбои к api.telegram.org (SSL: UNEXPECTED_EOF) частые
         for attempt in range(3):
             try:
-                req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                payload = post_json_ipv4(url, data, timeout=10)
                 if payload.get("ok"):
                     result = payload.get("result") or {}
                     chat = result.get("chat") or {}

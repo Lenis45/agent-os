@@ -89,25 +89,15 @@ def test_orchestrator_reply_normalizer_removes_markdown_for_telegram():
 def test_orchestrator_send_msg_retries_transient_telegram_error(monkeypatch):
     calls = {"count": 0}
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def fake_urlopen(*args, **kwargs):
+    def fake_post(*args, **kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             raise TimeoutError("handshake operation timed out")
-        return FakeResponse()
+        return {"ok": True}
 
     monkeypatch.setenv("ORCHESTRATOR_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_MY_ID", "123")
-    monkeypatch.setattr(orchestrator.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(orchestrator, "post_json_ipv4", fake_post)
     monkeypatch.setattr(orchestrator.time, "sleep", lambda *_: None)
 
     assert orchestrator.send_msg("готово", "123") is True

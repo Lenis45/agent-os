@@ -11,7 +11,7 @@ import llm
 import db
 from applog import get_logger
 from bot_commands import command_menu_text, set_application_commands
-from telegram_runtime import install_error_handler
+from telegram_runtime import install_error_handler, telegram_http_request
 
 load_dotenv()
 log = get_logger("knowledge_curator")
@@ -253,7 +253,12 @@ def main():
         raise RuntimeError("Postgres is unavailable; launchd will retry knowledge curator")
     init_db()
     log.info("Knowledge Curator + Context Translator запущен")
-    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).post_init(setup_secretary_commands).build()
+    app = (
+        Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN"))
+        .request(telegram_http_request())
+        .get_updates_request(telegram_http_request(polling=True))
+        .post_init(setup_secretary_commands).build()
+    )
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("save", handle_save))

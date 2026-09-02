@@ -34,6 +34,7 @@ except Exception:
     pass
 
 import notify
+from telegram_runtime import post_json_ipv4
 try:
     import ops_store
     OPS = True
@@ -141,12 +142,11 @@ def telegram_bot_ok(token_env):
     token = os.getenv(token_env, "").strip()
     if not token:
         return False, "токен не настроен"
-    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+    url = f"https://api.telegram.org/bot{token}/getMe"
     last_error = None
     for attempt in range(2):
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                payload = json.loads(response.read().decode("utf-8") or "{}")
+            payload = post_json_ipv4(url, {}, timeout=8)
             return bool(payload.get("ok")), str(payload.get("description") or "ok")
         except urllib.error.HTTPError as exc:
             return False, f"HTTP {exc.code}"
