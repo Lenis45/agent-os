@@ -138,7 +138,7 @@ flowchart TB
         Google["Google Calendar"]
         Mail["IMAP / SMTP"]
         Weeek["WEEEK CRM/tasks"]
-        Taiga["Taiga tasks"]
+        Taiga["Taiga tasks<br/>legacy, opt-in"]
     end
 
     Denis --> TG
@@ -228,7 +228,7 @@ flowchart LR
 | Qdrant | `shared_memory`, `project_knowledge` vectors |
 | Obsidian vault | Founder notes, translated tasks, knowledge capture |
 | Local files | launchd plists, Telegram sessions, logs, backups |
-| External APIs | Telegram, Google Calendar, IMAP/SMTP, WEEEK, Taiga, LLM providers |
+| External APIs | Telegram, Google Calendar, IMAP/SMTP, WEEEK, optional legacy Taiga, LLM providers |
 
 Secrets live in untracked env/session files. README files intentionally document
 variable names and contours, not secret values.
@@ -273,7 +273,7 @@ flowchart TB
 | `email_watchdog` | scheduled | IMAP triage and digest | email headers/body snippets |
 | `calendar_agent` | cron | Calendar candidate detection and safe sync | Google Calendar, Telegram/email context |
 | `knowledge_curator` | 24/7 launchd | Obsidian capture, task translation, memory | Obsidian, Qdrant, `known_entities` |
-| `task_sync` | cron | WEEEK/Taiga KPI report | external task APIs, snapshots |
+| `task_sync` | cron | WEEEK KPI report; Taiga only when explicitly enabled | external task APIs, snapshots |
 | `lead_manager` | cron/on-demand | CRM, follow-ups, lead report | `customer_db.leads`, WEEEK |
 | `email_agent` | on-demand | Outbound lead email drafts/sends | SMTP, `customer_db.leads` |
 | `support_agent` | 24/7 launchd | Customer support bot and escalation | `support_tickets`, Telegram |

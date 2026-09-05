@@ -112,6 +112,8 @@ MacBook не запускает production-агентов. Устаревшая 
 
 ## Секреты
 - `~/ai-infra/agents/.env` — интеграционные secrets (TG, WEEEK, Google, DB); LLM API keys optional/disabled.
+- Google Calendar запускается только через `ai.calendar-digest` в 08:00. `python3 scripts/calendar_doctor.py` выявляет старую cron-копию, проблемы token permissions и OAuth scope.
+- Taiga сохранена как отключаемый legacy-источник. При `TASK_SYNC_TAIGA_ENABLED=false` `task_sync` не выполняет запросов к Taiga и не передаёт её данные в LLM.
   Права: должны быть `600`. Файлы `.en`/`.env.save` — мусор/бэкапы, проверить и удалить.
 - Compose получает пароли и encryption keys из untracked корневого `.env`; LaunchAgent
   plist не содержат токены. Следующий уровень — отдельный local secret backend.

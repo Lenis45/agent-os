@@ -128,7 +128,7 @@ Customer data does not belong in `ops_db` except derived operational metadata.
 | `chief_of_staff` | `chief_of_staff.py` | schedule | Telegram digest and waiting-reply analysis |
 | `email_watchdog` | `email_watchdog.py` | schedule | IMAP digest |
 | `calendar_agent` | `calendar_agent.py` | cron | Calendar sync; fails closed if Google OAuth is invalid |
-| `task_sync` | `task_sync.py` | cron | WEEEK/Taiga task KPI report |
+| `task_sync` | `task_sync.py` | cron | WEEEK task KPI report; legacy Taiga source is opt-in |
 | `lead_manager` | `lead_manager.py` | cron/on-demand | CRM, follow-ups, lead report |
 | `email_agent` | `email_agent.py` | on-demand | Outbound emails to leads |
 | `infra_monitor` | `infra_monitor.py` | schedule | System health checks and alerting |
@@ -242,7 +242,8 @@ Coverage includes:
 
 | Issue | Impact | Fix |
 |---|---|---|
-| Google Calendar `invalid_grant` | Calendar sync cannot write events | Run `python3 scripts/reauthorize_calendar.py` and confirm access in Google |
+| Google Calendar `invalid_grant` | Calendar sync cannot read/write events | Run `python3 scripts/calendar_doctor.py`, then `python3 scripts/reauthorize_calendar.py` and confirm access in Google |
+| Empty WEEEK project | No current task report is needed | Healthy heartbeat; no LLM call and no Telegram warning |
 | One IMAP `AUTHENTICATIONFAILED` | One mailbox missing from digest | Generate new app password |
 | Historical reports before hardening | Kept for audit, hidden from current results | No action; the dashboard shows only trusted new reports |
 | Telegram VPN/TLS blips | A single probe can fail transiently | Polling recovers and monitoring retries before alerting |
