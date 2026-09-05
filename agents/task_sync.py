@@ -6,6 +6,7 @@ runtime_bootstrap.ensure_isolated_runtime()
 
 import requests
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 import hashlib
 
@@ -17,6 +18,22 @@ from applog import get_logger
 
 load_dotenv()
 log = get_logger("task_sync")
+
+
+@dataclass
+class TaskSourceResult:
+    source: str
+    tasks: list[dict] = field(default_factory=list)
+    ok: bool = True
+    enabled: bool = True
+    error: str = ""
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 def get_db():
     return db.connect("agents")
@@ -82,17 +99,22 @@ def save_snapshot(source, project, stats, team_data):
     except Exception as e:
         print(f"DB save error: {e}")
 
-def get_historical_snapshots(source, project, days=7):
+def get_historical_snapshots(source, project, days=7, since=None):
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("""
+        query = """
             SELECT date, total_tasks, completed_tasks, overdue_tasks, avg_task_age_days
             FROM task_snapshots
             WHERE source = %s AND project_name = %s
             AND date >= CURRENT_DATE - %s
-            ORDER BY date DESC
-        """, (source, project, days))
+        """
+        params = [source, project, days]
+        if since:
+            query += " AND created_at >= %s"
+            params.append(since)
+        query += " ORDER BY date DESC, created_at DESC"
+        cur.execute(query, tuple(params))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -114,65 +136,91 @@ def get_weeek_members(headers):
         log.info(f"WEEEK members error: {e}")
     return members
 
-def get_weeek_tasks():
-    headers = {"Authorization": f"Bearer {os.getenv('WEEEK_TOKEN')}"}
+def _weeek_task(task: dict, project_name: str, members: dict) -> dict:
+    assignee_ids = task.get("assignees", []) or []
+    assignee_names = [members.get(uid, uid[:8]) for uid in assignee_ids if isinstance(uid, str)]
+    assignee = ", ".join(assignee_names) if assignee_names else "Не назначен"
+    is_completed = bool(task.get("isCompleted", False))
+    is_overdue = (task.get("overdue", 0) or 0) > 0
+    status = "Завершено" if is_completed else ("Просрочено" if is_overdue else "В работе")
+    return {
+        "source": "WEEEK",
+        "project": project_name,
+        "id": str(task.get("id", "")),
+        "title": task.get("title", "Без названия"),
+        "description": task.get("description", "") or "",
+        "status": status,
+        "assignee": assignee,
+        "assignees": assignee_names,
+        "due_date": task.get("dueDate", "") or "",
+        "updated_at": task.get("updatedAt", "") or "",
+        "created_at": task.get("createdAt", "") or "",
+        "priority": task.get("priority", "") or "normal",
+        "tags": [str(tag) for tag in task.get("tags", [])],
+        "overdue_days": task.get("overdue", 0) or 0,
+        "is_completed": is_completed,
+    }
+
+
+def _weeek_task_pages(headers: dict, project_id, per_page: int = 100) -> list[dict]:
+    tasks = []
+    seen_ids = set()
+    offset = 0
+    for _page in range(100):
+        response = requests.get(
+            "https://api.weeek.net/public/v1/tm/tasks",
+            headers=headers,
+            params={"projectId": project_id, "perPage": per_page, "offset": offset},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"WEEEK tasks HTTP {response.status_code}")
+        page = response.json().get("tasks", [])
+        for task in page:
+            task_id = str(task.get("id", ""))
+            if not task_id:
+                raise RuntimeError("WEEEK returned a task without id")
+            if task_id in seen_ids:
+                raise RuntimeError(f"WEEEK pagination returned duplicate task id: {task_id}")
+            seen_ids.add(task_id)
+            tasks.append(task)
+        if len(page) < per_page:
+            return tasks
+        offset += per_page
+    raise RuntimeError("WEEEK pagination exceeded 100 pages")
+
+
+def get_weeek_tasks() -> TaskSourceResult:
+    token = (os.getenv("WEEEK_TOKEN") or "").strip()
+    if not token:
+        return TaskSourceResult("WEEEK", ok=False, error="WEEEK_TOKEN is not configured")
+    headers = {"Authorization": f"Bearer {token}"}
     all_tasks = []
+    seen_ids = set()
 
     try:
         members = get_weeek_members(headers)
+        response = requests.get(
+            "https://api.weeek.net/public/v1/tm/projects", headers=headers, timeout=10
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"WEEEK projects HTTP {response.status_code}")
 
-        r = requests.get("https://api.weeek.net/public/v1/tm/projects", headers=headers, timeout=10)
-        if r.status_code != 200:
-            log.info(f"WEEEK projects error: {r.status_code}")
-            return all_tasks
-
-        projects = r.json().get("projects", [])
-        log.info(f"WEEEK: найдено {len(projects)} проектов, участников: {len(members)}")
-
+        projects = response.json().get("projects", [])
+        log.info("WEEEK: найдено %s проектов, участников: %s", len(projects), len(members))
         for project in projects:
-            pid = project.get("id")
-            pname = project.get("title", "Без названия")
-
-            r2 = requests.get(
-                f"https://api.weeek.net/public/v1/tm/tasks?projectId={pid}",
-                headers=headers, timeout=10
-            )
-            if r2.status_code != 200:
-                continue
-
-            for task in r2.json().get("tasks", []):
-                # assignees — список UUID строк
-                assignee_ids = task.get("assignees", []) or []
-                assignee_names = [members.get(uid, uid[:8]) for uid in assignee_ids if isinstance(uid, str)]
-                assignee = ", ".join(assignee_names) if assignee_names else "Не назначен"
-
-                # статус через isCompleted
-                is_completed = task.get("isCompleted", False)
-                is_overdue = (task.get("overdue", 0) or 0) > 0
-                status = "Завершено" if is_completed else ("Просрочено" if is_overdue else "В работе")
-
-                all_tasks.append({
-                    "source": "WEEEK",
-                    "project": pname,
-                    "id": str(task.get("id", "")),
-                    "title": task.get("title", "Без названия"),
-                    "description": task.get("description", "") or "",
-                    "status": status,
-                    "assignee": assignee,
-                    "assignees": assignee_names,
-                    "due_date": task.get("dueDate", "") or "",
-                    "updated_at": task.get("updatedAt", "") or "",
-                    "created_at": task.get("createdAt", "") or "",
-                    "priority": task.get("priority", "") or "normal",
-                    "tags": [str(t) for t in task.get("tags", [])],
-                    "overdue_days": task.get("overdue", 0) or 0,
-                    "is_completed": is_completed
-                })
-
-    except Exception as e:
-        log.info(f"WEEEK error: {e}")
-
-    return all_tasks
+            project_id = project.get("id")
+            project_name = project.get("title", "Без названия")
+            for task in _weeek_task_pages(headers, project_id):
+                task_id = str(task.get("id", ""))
+                if task_id in seen_ids:
+                    raise RuntimeError(f"WEEEK duplicate task id across projects: {task_id}")
+                seen_ids.add(task_id)
+                all_tasks.append(_weeek_task(task, project_name, members))
+        return TaskSourceResult("WEEEK", tasks=all_tasks)
+    except Exception as error:
+        log.warning("WEEEK error: %s", error)
+        return TaskSourceResult("WEEEK", ok=False, error=str(error)[:180])
 
 # ===== TAIGA =====
 def get_taiga_token():
@@ -188,11 +236,13 @@ def get_taiga_token():
         log.info(f"Taiga auth error: {e}")
     return None
 
-def get_taiga_tasks():
+def get_taiga_tasks() -> TaskSourceResult:
+    if not env_flag("TASK_SYNC_TAIGA_ENABLED", default=False):
+        return TaskSourceResult("Taiga", enabled=False)
     all_tasks = []
     token = get_taiga_token()
     if not token:
-        return all_tasks
+        return TaskSourceResult("Taiga", ok=False, error="Taiga authentication failed")
 
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -206,7 +256,7 @@ def get_taiga_tasks():
         user_id = auth_data.get("id", 0)
         r = requests.get(f"{os.getenv('TAIGA_URL')}/api/v1/projects?member={user_id}", headers=headers, timeout=10)
         if r.status_code != 200:
-            return all_tasks
+            return TaskSourceResult("Taiga", ok=False, error=f"Taiga projects HTTP {r.status_code}")
 
         projects = r.json()
         log.info(f"Taiga: найдено {len(projects)} проектов")
@@ -269,14 +319,13 @@ def get_taiga_tasks():
 
     except Exception as e:
         log.info(f"Taiga error: {e}")
+        return TaskSourceResult("Taiga", ok=False, error=str(e)[:180])
 
-    return all_tasks
+    return TaskSourceResult("Taiga", tasks=all_tasks)
 
 def calculate_kpis(tasks, source, project):
     now = datetime.now()
     total = len(tasks)
-    if total == 0:
-        return {}, {}
 
     completed = sum(1 for t in tasks if any(
         word in (t.get("status", "") or "").lower()
@@ -342,6 +391,13 @@ def calculate_kpis(tasks, source, project):
 
     return stats, team_load
 
+
+def is_active_task(task: dict) -> bool:
+    if task.get("is_completed") is True:
+        return False
+    status = (task.get("status") or "").strip().lower()
+    return status not in {"done", "завершено", "closed", "complete", "completed", "готово"}
+
 def format_trend(history):
     if len(history) < 2:
         return "недостаточно данных для тренда"
@@ -388,22 +444,30 @@ def task_digest_fingerprint(tasks) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def unchanged_digest(weeek_tasks, taiga_tasks, weeek_stats, taiga_stats, now_str) -> str:
+def source_summary(result: TaskSourceResult, stats: dict, active_count: int) -> str:
     return (
-        f"Task Sync | {now_str}\n"
-        "С прошлого отчёта задачи и дедлайны не изменились.\n\n"
-        f"WEEEK: {len(weeek_tasks)} задач, завершено {weeek_stats.get('completion_rate', 0)}%, "
-        f"просрочено {weeek_stats.get('overdue', 0)}\n"
-        f"Taiga: {len(taiga_tasks)} задач, завершено {taiga_stats.get('completion_rate', 0)}%, "
-        f"просрочено {taiga_stats.get('overdue', 0)}\n\n"
-        "Новый AI-анализ не запускался: нет новых данных для решения."
+        f"{result.source}: активно {active_count}, всего {len(result.tasks)}, "
+        f"завершено {stats.get('completed', 0)}, просрочено {stats.get('overdue', 0)}"
+    )
+
+
+def unchanged_digest(source_lines: list[str], now_str: str) -> str:
+    return "\n".join(
+        [
+            f"Task Sync | {now_str}",
+            "С прошлого отчёта активные задачи и дедлайны не изменились.",
+            "",
+            *source_lines,
+            "",
+            "Новый AI-анализ не запускался: нет новых данных для решения.",
+        ]
     )
 
 agent = llm.build_agent(
     "task_sync",
     name="TaskSync",
-    role="Менеджер задач и дедлайнов стартапа Amori",
-    goal="""Ты анализируешь задачи из WEEEK и Taiga и находишь проблемы.
+    role="Менеджер задач и дедлайнов",
+    goal="""Ты анализируешь задачи из включённых источников и находишь проблемы.
 Отвечай на русском, конкретно, с именами и названиями задач.""",
 )
 
@@ -417,58 +481,93 @@ def run():
     init_db()
     ops_store.init()
 
-    weeek_tasks = get_weeek_tasks()
-    taiga_tasks = get_taiga_tasks()
-    all_tasks = weeek_tasks + taiga_tasks
+    results = [get_weeek_tasks(), get_taiga_tasks()]
+    enabled_results = [result for result in results if result.enabled]
+    failed_results = [result for result in enabled_results if not result.ok]
+    successful_results = [result for result in enabled_results if result.ok]
+    all_tasks = [task for result in successful_results for task in result.tasks]
+    active_tasks = [task for task in all_tasks if is_active_task(task)]
 
-    if not all_tasks:
-        delivered = notify.send(f"Task Sync | {now_str}\nНе удалось получить задачи.")
-        ops_store.record_run(
-            "task_sync", "warn", {"tasks": 0, "delivered": delivered}
+    if failed_results and not successful_results:
+        failures = "; ".join(f"{result.source}: {result.error}" for result in failed_results)
+        delivered = notify.send(
+            f"Task Sync | {now_str}\nИсточники задач недоступны: {failures}",
+            "warn",
         )
-        ops_store.heartbeat(
-            "task_sync", "warn", {"tasks": 0, "delivered": delivered}
-        )
-        log.warning("Task Sync не получил задачи из WEEEK/Taiga")
+        detail = {"active_tasks": 0, "source_error": failures, "delivered": delivered}
+        ops_store.record_run("task_sync", "warn", detail)
+        ops_store.heartbeat("task_sync", "warn", detail)
+        log.warning("Task Sync: все включённые источники недоступны: %s", failures)
         return
 
-    print(f"Всего задач: {len(all_tasks)}")
+    stats_by_source = {}
+    team_by_source = {}
+    for source_result in successful_results:
+        stats, team = calculate_kpis(source_result.tasks, source_result.source, "all")
+        stats_by_source[source_result.source] = stats
+        team_by_source[source_result.source] = team
+        save_snapshot(source_result.source, "all", stats, team)
 
-    # KPI по источникам
-    weeek_stats, weeek_team = calculate_kpis(weeek_tasks, "WEEEK", "all")
-    taiga_stats, taiga_team = calculate_kpis(taiga_tasks, "Taiga", "all")
+    source_lines = [
+        source_summary(
+            source_result,
+            stats_by_source[source_result.source],
+            sum(1 for task in source_result.tasks if is_active_task(task)),
+        )
+        for source_result in successful_results
+    ]
 
-    # Сохраняем снапшоты
-    save_snapshot("WEEEK", "all", weeek_stats, weeek_team)
-    save_snapshot("Taiga", "all", taiga_stats, taiga_team)
+    if not active_tasks:
+        ops_store.set_automation_state(
+            "task_sync_digest",
+            {
+                "fingerprint": task_digest_fingerprint([]),
+                "active_tasks": 0,
+                "total_tasks": len(all_tasks),
+                "sent_at": None,
+                "checked_at": now.isoformat(),
+            },
+        )
+        detail = {
+            "active_tasks": 0,
+            "total_tasks": len(all_tasks),
+            "llm_skipped": True,
+            "telegram_skipped": True,
+            "sources": [result.source for result in successful_results],
+        }
+        ops_store.record_run("task_sync", "ok", detail)
+        ops_store.heartbeat("task_sync", "ok", detail)
+        log.info("Task Sync: активных задач нет, LLM и Telegram пропущены")
+        return
 
-    # История за 7 дней
-    weeek_history = get_historical_snapshots("WEEEK", "all", 7)
-    taiga_history = get_historical_snapshots("Taiga", "all", 7)
+    print(f"Активных задач: {len(active_tasks)} (всего в источниках: {len(all_tasks)})")
+    baseline = ops_store.get_automation_state("task_sync_baseline", {}) or {}
+    baseline_at = baseline.get("started_at")
+    history_by_source = {
+        result.source: get_historical_snapshots(result.source, "all", 7, since=baseline_at)
+        for result in successful_results
+    }
 
-    fingerprint = task_digest_fingerprint(all_tasks)
+    fingerprint = task_digest_fingerprint(active_tasks)
     previous = ops_store.get_automation_state("task_sync_digest", {}) or {}
     if previous.get("fingerprint") == fingerprint:
-        delivered = notify.send(
-            unchanged_digest(weeek_tasks, taiga_tasks, weeek_stats, taiga_stats, now_str)
-        )
+        delivered = notify.send(unchanged_digest(source_lines, now_str))
         ops_store.record_run(
             "task_sync",
             "unchanged" if delivered else "partial",
-            {"llm_skipped": True, "tasks": len(all_tasks), "delivered": delivered},
+            {"llm_skipped": True, "active_tasks": len(active_tasks), "delivered": delivered},
         )
         ops_store.heartbeat(
             "task_sync",
             "ok" if delivered else "warn",
-            {"llm_skipped": True, "tasks": len(all_tasks), "delivered": delivered},
+            {"llm_skipped": True, "active_tasks": len(active_tasks), "delivered": delivered},
         )
         log.info("Задачи не изменились: LLM-вызов пропущен")
         return
 
     # Формируем детальный текст для агента
-    now_date = now.strftime("%Y-%m-%d")
     text = ""
-    for t in all_tasks:
+    for t in active_tasks:
         due = t.get("due_date", "") or ""
         updated = t.get("updated_at", "") or ""
         desc = t.get("description", "") or ""
@@ -481,37 +580,32 @@ def run():
             f"  Теги: {', '.join([x[0] if isinstance(x, list) else str(x) for x in t.get('tags', [])]) or 'нет'}\n\n"
         )
 
-    # KPI блок
-    kpi_text = f"""
-МЕТРИКИ WEEEK:
-- Всего задач: {weeek_stats.get('total', 0)}
-- Завершено: {weeek_stats.get('completed', 0)} ({weeek_stats.get('completion_rate', 0)}%)
-- Просрочено: {weeek_stats.get('overdue', 0)}
-- Без ответственного: {weeek_stats.get('no_assignee', 0)}
-- Зависших (>3 дней без активности): {weeek_stats.get('stale', 0)}
-- Средний возраст задачи: {weeek_stats.get('avg_age', 0)} дней
-- Нагрузка команды: {json.dumps(weeek_team, ensure_ascii=False)}
-- Тренд за неделю: {format_trend(weeek_history)}
+    kpi_blocks = []
+    for source_result in successful_results:
+        stats = stats_by_source[source_result.source]
+        active_count = sum(1 for task in source_result.tasks if is_active_task(task))
+        kpi_blocks.append(
+            f"""МЕТРИКИ {source_result.source.upper()}:
+- Активно: {active_count}
+- Всего текущих: {stats.get('total', 0)}
+- Завершено: {stats.get('completed', 0)} ({stats.get('completion_rate', 0)}%)
+- Просрочено: {stats.get('overdue', 0)}
+- Без ответственного: {stats.get('no_assignee', 0)}
+- Зависших (>3 дней без активности): {stats.get('stale', 0)}
+- Средний возраст задачи: {stats.get('avg_age', 0)} дней
+- Нагрузка команды: {json.dumps(team_by_source[source_result.source], ensure_ascii=False)}
+- Тренд после последнего reset: {format_trend(history_by_source[source_result.source])}"""
+        )
+    kpi_text = "\n\n".join(kpi_blocks)
+    enabled_names = ", ".join(result.source for result in successful_results)
 
-МЕТРИКИ TAIGA:
-- Всего задач: {taiga_stats.get('total', 0)}
-- Завершено: {taiga_stats.get('completed', 0)} ({taiga_stats.get('completion_rate', 0)}%)
-- Просрочено: {taiga_stats.get('overdue', 0)}
-- Без ответственного: {taiga_stats.get('no_assignee', 0)}
-- Зависших (>3 дней без активности): {taiga_stats.get('stale', 0)}
-- Средний возраст задачи: {taiga_stats.get('avg_age', 0)} дней
-- Нагрузка команды: {json.dumps(taiga_team, ensure_ascii=False)}
-- Тренд за неделю: {format_trend(taiga_history)}
-"""
-
-    prompt = f"""Ты персональный аналитик Дениса Колесникова — CEO стартапа Amori (умные ошейники).
+    prompt = f"""Ты персональный аналитик задач Дениса Колесникова.
 Дай полную управленческую картину по задачам. Напиши детальный CEO-отчёт БЕЗ таблиц,
 БЕЗ markdown, БЕЗ звёздочек.
 Используй только текст, эмодзи и символы ━ ↳ •
 
 ━━━ 📊 ОБЩАЯ КАРТИНА ━━━
-WEEEK [маркетинг/продажи/управление]: X/Y завершено (Z%)
-Taiga [разработка]: X/Y завершено (Z%)
+[По каждому включённому источнику: активно / всего / завершено / просрочено]
 Ключевая проблема: [одна фраза о главном риске]
 
 ━━━ 🔴 КРИТИЧНО — ТРЕБУЕТ РЕШЕНИЯ СЕГОДНЯ ━━━
@@ -520,15 +614,8 @@ Taiga [разработка]: X/Y завершено (Z%)
   ↳ Просрочено [N] дней / Дедлайн сегодня
   ↳ Что делать: [конкретное действие — позвонить, передать, закрыть]
 
-━━━ 🛠 РАЗРАБОТКА — ДЕТАЛЬНАЯ КАРТИНА ━━━
-[Перечисли ВСЕ активные задачи из Taiga с исполнителем и статусом]
-[Имя] — [Задача] → [Статус]
-[Выдели что в работе, что зависло, что без исполнителя]
-Завершено: [список что сделано]
-Не начато: [список что ещё не взяли в работу]
-
-━━━ 📋 WEEEK — ДЕТАЛЬНАЯ КАРТИНА ━━━
-[Перечисли ВСЕ активные задачи WEEEK с исполнителем и статусом]
+━━━ 📋 АКТИВНЫЕ ЗАДАЧИ ━━━
+[Перечисли ВСЕ переданные ниже активные задачи с источником, исполнителем и статусом]
 [Имя] — [Задача] → [Статус / Дедлайн]
 
 ━━━ 👥 НАГРУЗКА И УПРАВЛЕНИЕ КОМАНДОЙ ━━━
@@ -559,36 +646,50 @@ Taiga [разработка]: X/Y завершено (Z%)
 МЕТРИКИ:
 {kpi_text}
 
-ЗАДАЧИ (WEEEK — маркетинг/продажи/управление, Taiga — разработка; контекст ограничен для стабильного ответа):
+ВКЛЮЧЁННЫЕ ИСТОЧНИКИ: {enabled_names}
+
+ТОЛЬКО АКТИВНЫЕ ЗАДАЧИ (контекст ограничен для стабильного ответа):
 {text[:min(int(os.getenv('TASK_SYNC_CONTEXT_CHARS', '4500')), 6000)]}"""
 
     result = llm.run(agent, prompt, "task_sync")
 
-    header = (
-        f"Task Sync | {now_str}\n"
-        f"WEEEK: {len(weeek_tasks)} задач | Taiga: {len(taiga_tasks)} задач\n"
-        f"Completion: WEEEK {weeek_stats.get('completion_rate', 0)}% | "
-        f"Taiga {taiga_stats.get('completion_rate', 0)}%\n\n"
-    )
+    header = f"Task Sync | {now_str}\n" + "\n".join(source_lines) + "\n\n"
+    if failed_results:
+        header += "Недоступно: " + "; ".join(
+            f"{item.source}: {item.error}" for item in failed_results
+        ) + "\n\n"
 
     if notify.send(header + str(result)):
         ops_store.set_automation_state(
             "task_sync_digest",
-            {"fingerprint": fingerprint, "tasks": len(all_tasks), "sent_at": now.isoformat()},
+            {
+                "fingerprint": fingerprint,
+                "active_tasks": len(active_tasks),
+                "total_tasks": len(all_tasks),
+                "sent_at": now.isoformat(),
+            },
         )
         ops_store.record_run(
-            "task_sync", "ok", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": True}
+            "task_sync",
+            "partial" if failed_results else "ok",
+            {"llm_skipped": False, "active_tasks": len(active_tasks), "delivered": True},
         )
         ops_store.heartbeat(
-            "task_sync", "ok", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": True}
+            "task_sync",
+            "warn" if failed_results else "ok",
+            {"llm_skipped": False, "active_tasks": len(active_tasks), "delivered": True},
         )
         log.info("Отчёт отправлен в Telegram")
     else:
         ops_store.record_run(
-            "task_sync", "partial", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": False}
+            "task_sync",
+            "partial",
+            {"llm_skipped": False, "active_tasks": len(active_tasks), "delivered": False},
         )
         ops_store.heartbeat(
-            "task_sync", "warn", {"llm_skipped": False, "tasks": len(all_tasks), "delivered": False}
+            "task_sync",
+            "warn",
+            {"llm_skipped": False, "active_tasks": len(active_tasks), "delivered": False},
         )
         log.warning("Отчёт сформирован, но Telegram-доставка не подтверждена")
 

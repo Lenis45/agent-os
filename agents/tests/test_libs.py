@@ -81,11 +81,19 @@ def test_task_sync_skips_llm_when_source_data_is_unchanged(monkeypatch):
     runs = []
     monkeypatch.setattr(task_sync, "init_db", lambda: None)
     monkeypatch.setattr(task_sync.ops_store, "init", lambda: None)
-    monkeypatch.setattr(task_sync, "get_weeek_tasks", lambda: tasks)
-    monkeypatch.setattr(task_sync, "get_taiga_tasks", lambda: [])
+    monkeypatch.setattr(
+        task_sync,
+        "get_weeek_tasks",
+        lambda: task_sync.TaskSourceResult("WEEEK", tasks=tasks),
+    )
+    monkeypatch.setattr(
+        task_sync,
+        "get_taiga_tasks",
+        lambda: task_sync.TaskSourceResult("Taiga", enabled=False),
+    )
     monkeypatch.setattr(task_sync, "calculate_kpis", lambda *_args: ({"completion_rate": 0}, {}))
     monkeypatch.setattr(task_sync, "save_snapshot", lambda *_args: None)
-    monkeypatch.setattr(task_sync, "get_historical_snapshots", lambda *_args: [])
+    monkeypatch.setattr(task_sync, "get_historical_snapshots", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         task_sync.ops_store, "get_automation_state", lambda *_args: {"fingerprint": fingerprint}
     )
