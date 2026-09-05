@@ -213,3 +213,22 @@ def test_calendar_invalid_grant_requests_reauthorization():
 
     assert "повторная авторизация" in guidance
     assert "token.json" in guidance
+
+
+def test_calendar_invalid_grant_notification_is_deduplicated(monkeypatch, tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(calendar_agent, "TOKEN_FILE", str(token))
+    key = calendar_agent._calendar_oauth_failure_key("invalid_grant")
+    monkeypatch.setattr(
+        calendar_agent.ops_store,
+        "get_automation_state",
+        lambda *_args: {"failure_key": key, "delivered": True},
+    )
+    monkeypatch.setattr(
+        calendar_agent.notify,
+        "send",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("duplicate alert")),
+    )
+
+    assert calendar_agent.notify_calendar_failure("invalid_grant", "05.09.2026 08:00") is False
