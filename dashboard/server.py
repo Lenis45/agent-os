@@ -65,7 +65,7 @@ AGENTS = [
     ("chief_of_staff",   "Chief of Staff",        "9:00, 19:00", "sched",   "personal", "chief.of.staff"),
     ("email_watchdog",   "Email Watchdog",        "8:00",        "sched",   "personal", "email.watchdog"),
     ("task_sync",        "Task Sync",             "10:00 (cron)","sched",   "personal", None),
-    ("calendar_agent",   "Calendar Agent",        "8:30 (cron)", "sched",   "personal", None),
+    ("calendar_agent",   "Calendar Agent",        "08:00",       "sched",   "personal", "ai.calendar-digest"),
     ("lead_manager",     "Lead Manager",          "10/11 (cron)","sched",   "customer", None),
     ("email_agent",      "Email Agent",           "on-demand",   "ondemand","customer", None),
 ]
@@ -190,8 +190,6 @@ ROUTING_DEFAULT = {
 MODEL_CHOICES = [
     # Порядок = по качеству (то, что агенты реально могут вызвать через litellm).
     # «Топ» Claude/Codex — ручной уровень (нет API-ключей), здесь не выбирается.
-    "qwen-free/qwen3.7-max",         # Qwen (FreeQwenApi :3264) — лучший общий, free
-    "qwen-free/qwen3-coder-plus",    # Qwen — для кода, free
     "groq/openai/gpt-oss-120b",       # Groq — быстрый дефолт, free
     "groq/openai/gpt-oss-20b",        # Groq — экономичный кандидат после eval
     "gemini/gemini-3.6-flash",       # Gemini — рабочий API fallback
@@ -226,7 +224,7 @@ def http_ok(url):
         return False
 
 
-def qwen_image_ok():
+def image_provider_ok():
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         request = urllib.request.Request("http://127.0.0.1:3264/api/status")
@@ -292,7 +290,7 @@ def build_state():
             "smm_factory": http_ok("http://127.0.0.1:8180/health"),
             "pixel_office": http_ok("http://127.0.0.1:5070/"),
             "request_broker": http_ok("http://100.66.130.21:8110/health"),
-            "image_provider": qwen_image_ok(),
+            "image_provider": image_provider_ok(),
         })
         f_smart_requests = ex.submit(psql_json, "ops_db",
             "SELECT id::text, source, status, mode, target_device, "

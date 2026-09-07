@@ -188,6 +188,19 @@ def test_image_payload_requires_real_image_magic():
         broker_worker._image_suffix(b"<html>not an image</html>")
 
 
+def test_image_provider_accepts_standard_base64_payload():
+    payload = b"\x89PNG\r\n\x1a\nrest"
+
+    assert broker_worker._decode_image_item({
+        "b64_json": __import__("base64").b64encode(payload).decode("ascii")
+    }) == payload
+
+
+def test_image_provider_rejects_invalid_base64_payload():
+    with pytest.raises(RuntimeError, match="invalid base64"):
+        broker_worker._decode_image_item({"b64_json": "not/base64?"})
+
+
 def test_worker_runtime_info_is_cached(monkeypatch):
     version_calls = []
     auth_calls = []

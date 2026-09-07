@@ -4,14 +4,13 @@ import asyncio
 import argparse
 import time
 import runtime_bootstrap
+from pathlib import Path
 
 runtime_bootstrap.ensure_isolated_runtime()
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from telethon import TelegramClient
 from telethon.tl.types import Message
@@ -23,13 +22,14 @@ from memory import remember, recall, is_known, init_db
 import notify
 import llm
 import ops_store
+from calendar_auth import CALENDAR_SCOPES, is_invalid_grant, load_calendar_credentials
 from applog import get_logger
 
 load_dotenv()
 log = get_logger("calendar_agent")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+SCOPES = list(CALENDAR_SCOPES)
 CREDS_FILE = os.path.join(_HERE, 'credentials.json')
 TOKEN_FILE = os.path.join(_HERE, 'token.json')
 CALENDAR_TIMEZONE = os.getenv("CALENDAR_TIMEZONE", "Europe/Moscow")
@@ -43,21 +43,54 @@ tg = TelegramClient(
 
 def calendar_error_guidance(error) -> str:
     text = str(error or "").lower()
-    if any(marker in text for marker in ("invalid_grant", "expired", "revoked", "token.json не найден")):
+    if is_invalid_grant(error) or any(marker in text for marker in ("expired", "revoked", "token.json не найден")):
         return "Нужна повторная авторизация Google Calendar и новый token.json."
     if any(marker in text for marker in ("ssl", "eof", "timeout", "timed out", "connection", "network")):
         return "Проверь VPN/сеть до oauth2.googleapis.com и www.googleapis.com; повторная авторизация не нужна."
     return "Проверь доступ к Google Calendar; повторную авторизацию делай только при ошибке OAuth-токена."
 
+
+def _calendar_oauth_failure_key(error) -> str | None:
+    if not is_invalid_grant(error):
+        return None
+    try:
+        token_version = Path(TOKEN_FILE).stat().st_mtime_ns
+    except OSError:
+        token_version = "missing"
+    return f"invalid_grant:{token_version}"
+
+
+def notify_calendar_failure(error, now_str: str) -> bool:
+    """Send one invalid_grant alert per token version; other failures stay visible."""
+    failure_key = _calendar_oauth_failure_key(error)
+    if failure_key:
+        try:
+            previous = ops_store.get_automation_state("calendar_oauth_alert", {}) or {}
+            if previous.get("failure_key") == failure_key and previous.get("delivered"):
+                log.info("Повторный invalid_grant для того же token.json: уведомление пропущено")
+                return False
+        except Exception as state_error:
+            log.warning("Calendar alert state unavailable: %s", state_error)
+
+    delivered = notify.send(
+        f"📅 Calendar Agent | {now_str}\n"
+        f"Не смог подключиться к Google Calendar: {str(error)[:300]}\n"
+        "Автоматическое добавление/удаление событий пропущено. " + calendar_error_guidance(error),
+        "warn",
+    )
+    if failure_key and delivered:
+        try:
+            ops_store.set_automation_state(
+                "calendar_oauth_alert",
+                {"failure_key": failure_key, "delivered": True, "sent_at": datetime.now().isoformat()},
+            )
+        except Exception as state_error:
+            log.warning("Calendar alert state was not saved: %s", state_error)
+    return delivered
+
 def get_calendar_service():
-    if not os.path.exists(TOKEN_FILE):
-        raise RuntimeError("Google Calendar token.json не найден — нужна повторная авторизация")
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open(TOKEN_FILE, 'w') as f:
-            f.write(creds.to_json())
-    return build('calendar', 'v3', credentials=creds)
+    creds = load_calendar_credentials(Path(TOKEN_FILE), scopes=tuple(SCOPES))
+    return build('calendar', 'v3', credentials=creds, cache_discovery=False)
 
 def _execute_google(request, attempts: int = 3):
     """Execute a Google API request with small retries for transient network EOF/TLS errors."""
@@ -654,12 +687,7 @@ async def run():
             })
         except Exception:
             pass
-        notify.send(
-            f"📅 Calendar Agent | {now_str}\n"
-            f"Не смог подключиться к Google Calendar: {str(e)[:300]}\n"
-            "Автоматическое добавление/удаление событий пропущено. " + calendar_error_guidance(e),
-            "warn",
-        )
+        notify_calendar_failure(e, now_str)
         return
     log.info(f"Событий в календаре: {len(upcoming)}")
 
