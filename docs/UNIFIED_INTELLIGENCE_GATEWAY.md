@@ -16,14 +16,14 @@ Terminal states are `completed`, `partial`, `failed`, and `cancelled`. Workers u
 - Input documents are stored under `~/.local/share/amori/artifacts`, extracted as untrusted data, and expire after 30 days.
 - `act` requests wait for explicit confirmation before a worker can claim them.
 - Artifact discovery is limited to the selected workspace and excludes secret-looking files.
-- Remote image URLs must use HTTPS and match the Qwen/Alibaba CDN allowlist. The worker validates image magic bytes and a 25 MB size limit before storing a result.
+- Remote image URLs must use HTTPS and match the trusted CDN allowlist. Standard base64 image responses are also accepted. The worker validates image magic bytes and a 25 MB size limit before storing a result.
 
 ## Services
 
 ```bash
 launchctl print gui/$UID/ai.request-broker
 launchctl print gui/$UID/ai.request-worker
-launchctl print gui/$UID/com.denis.freeqwenapi
+launchctl print gui/$UID/ai.image-bridge
 curl -fsS http://100.66.130.21:8110/health
 curl -fsS http://127.0.0.1:3264/api/status
 ```
@@ -60,20 +60,20 @@ AMORI_BROKER_URL=http://100.66.130.21:8110
 - Claude Code handles architecture, product reasoning, and current-information research.
 - Codex handles code implementation, debugging, tests, browser QA, and repository work.
 - Native handlers own calendar, CRM, email, notes, content-factory, and project-team side effects.
-- Image generation uses the local Qwen Chat bridge and must return a real validated image artifact. A text-only claim never counts as success.
+- Image generation uses a localhost-only bridge to the Hermes Codex image plugin. It must return a real validated image artifact; a text-only claim never counts as success.
 
 ## Image provider recovery
 
-The Qwen bridge uses an existing Qwen Chat account and no separate API key. If the dashboard shows `Автогенерация изображений недоступна` or `/api/status` reports `INVALID`, refresh the account session:
+The image bridge uses a separate Hermes Codex OAuth session and no API key. It intentionally does not reuse the Codex CLI refresh token, avoiding concurrent token rotation. If the dashboard shows `Автогенерация изображений недоступна` or `/api/status` reports `AUTH_REQUIRED`, authorize Hermes and restart the bridge:
 
 ```bash
-cd ~/ai-infra/FreeQwenApi
-npm run auth
-launchctl kickstart -k gui/$UID/com.denis.freeqwenapi
+cd ~/.hermes/hermes-agent
+hermes auth add openai-codex --type oauth --no-browser
+launchctl kickstart -k gui/$UID/ai.image-bridge
 curl -fsS http://127.0.0.1:3264/api/status
 ```
 
-This is the only account-interactive recovery step. Do not place Qwen cookies or tokens in git.
+This is the only account-interactive recovery step. Do not place OAuth credentials or tokens in git. If OAuth is unavailable, the SMM factory falls back to a local branded card instead of failing the post workflow.
 
 ## MacBook worker
 

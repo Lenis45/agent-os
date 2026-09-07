@@ -449,7 +449,7 @@ Cron:
 ├── docs/                HOW_IT_WORKS, RUNBOOK, INFRA, principles
 ├── backups/             Local/off-site backup scripts and restore tests
 ├── office-fork/         Private Pixel Office submodule
-├── FreeQwenApi/         Private optional Qwen proxy submodule (disabled by default)
+├── scripts/image_bridge.py  Local Codex image bridge (separate Hermes OAuth)
 ├── docker-compose.yml   Postgres, Qdrant, Redis, Langfuse, n8n
 └── AGENTS.md            Coding-agent rules for this repository
 ```

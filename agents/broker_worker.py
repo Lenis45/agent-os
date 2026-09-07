@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -353,7 +354,31 @@ def _image_suffix(payload: bytes) -> str:
     raise RuntimeError("Image provider returned a non-image payload")
 
 
-def _qwen_image_generation(request: dict, runtime: Path) -> tuple[str, list]:
+def _decode_image_item(item: dict) -> bytes:
+    encoded = str(item.get("b64_json") or "").strip()
+    if encoded:
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("Image provider returned invalid base64 data") from error
+        if len(payload) > MAX_IMAGE_BYTES:
+            raise RuntimeError("Generated image exceeds the 25 MB limit")
+        return payload
+
+    image_url = _validated_image_url(str(item.get("url") or ""))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    download = urllib.request.Request(image_url, headers={"Accept": "image/*"})
+    try:
+        with opener.open(download, timeout=180) as response:
+            payload = response.read(MAX_IMAGE_BYTES + 1)
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"Cannot download generated image: {error}") from error
+    if len(payload) > MAX_IMAGE_BYTES:
+        raise RuntimeError("Generated image exceeds the 25 MB limit")
+    return payload
+
+
+def _provider_image_generation(request: dict, runtime: Path) -> tuple[str, list]:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     body = json.dumps({
         "prompt": request["prompt_text"],
@@ -373,28 +398,20 @@ def _qwen_image_generation(request: dict, runtime: Path) -> tuple[str, list]:
             message = detail.get("message") or detail.get("error") or f"HTTP {error.code}"
         except (json.JSONDecodeError, AttributeError):
             message = f"HTTP {error.code}"
-        raise RuntimeError(f"Qwen image provider unavailable: {message}") from error
+        raise RuntimeError(f"Image provider unavailable: {message}") from error
     except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise RuntimeError(
-            "Сервис изображений Qwen не запущен. Обновите авторизацию Qwen и повторите запрос."
+            "Сервис изображений недоступен. Проверьте авторизацию Hermes Codex и повторите запрос."
         ) from error
 
     item = (result.get("data") or [{}])[0]
-    image_url = _validated_image_url(str(item.get("url") or ""))
-    download = urllib.request.Request(image_url, headers={"Accept": "image/*"})
-    try:
-        with opener.open(download, timeout=180) as response:
-            payload = response.read(MAX_IMAGE_BYTES + 1)
-    except (OSError, urllib.error.URLError, TimeoutError) as error:
-        raise RuntimeError(f"Cannot download generated image: {error}") from error
-    if len(payload) > MAX_IMAGE_BYTES:
-        raise RuntimeError("Generated image exceeds the 25 MB limit")
+    payload = _decode_image_item(item)
     suffix = _image_suffix(payload)
     output = runtime / f"generated{suffix}"
     output.write_bytes(payload)
     registered = _register_output(request, output)
     return "Изображение готово.", [
-        {"type": "image_provider", "provider": "qwen-chat", "model": result.get("model")},
+        {"type": "image_provider", "provider": result.get("provider", "openai-codex"), "model": result.get("model")},
         {"type": "artifacts", "ids": [registered["id"]]},
     ]
 
@@ -402,7 +419,7 @@ def _qwen_image_generation(request: dict, runtime: Path) -> tuple[str, list]:
 def _image_generation(request: dict) -> tuple[str, list]:
     runtime = Path(DEFAULT_CWD) / "agents" / "runtime" / "request-artifacts" / str(request["id"])
     runtime.mkdir(parents=True, exist_ok=True)
-    return _qwen_image_generation(request, runtime)
+    return _provider_image_generation(request, runtime)
 
 
 def execute(request: dict) -> None:
