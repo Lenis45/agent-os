@@ -56,7 +56,7 @@ def summarize(*, agents, containers, heartbeats, projects, content, leads, surfa
     if surfaces.get("image_provider") is False:
         actions.append(_action(
             "image_provider_down", "warning", "Автогенерация изображений недоступна",
-            "Повторно авторизуйте локальный Qwen-контур; текстовые запросы продолжат работать.",
+            "Проверьте локальный image bridge и OAuth Hermes Codex; текстовые запросы продолжат работать.",
             "system",
         ))
 

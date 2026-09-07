@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "agents"
 BACKUPS = ROOT / "backups" / "local"
 STORAGE_STATUS = AGENTS / "runtime" / "storage_maintenance.json"
+HERMES_CONFIG = Path("~/.hermes/config.yaml").expanduser()
 
 
 @dataclass
@@ -90,6 +91,27 @@ def telegram_check(name: str, token: str) -> Check:
         if attempt < 2:
             time.sleep(1)
     return Check("WARN", name, f"transient network failure after 3 attempts: {last_error}")
+
+
+def image_bridge_check() -> Check:
+    url = "http://127.0.0.1:3264/api/status"
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(urllib.request.Request(url), timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("authenticated"):
+            return Check("PASS", "Image bridge", str(payload.get("provider") or "ready"))
+        return Check("WARN", "Image bridge", "Hermes Codex OAuth is required")
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {}
+        if exc.code == 503 and payload.get("status") == "AUTH_REQUIRED":
+            return Check("WARN", "Image bridge", "Hermes Codex OAuth is required")
+        return Check("FAIL", "Image bridge", f"HTTP {exc.code}")
+    except Exception as exc:
+        return Check("FAIL", "Image bridge", str(exc)[:120])
 
 
 def docker_checks() -> list[Check]:
@@ -211,6 +233,65 @@ def runtime_check() -> Check:
     return Check("PASS" if code == 0 else "FAIL", "Python runtime", output[:120])
 
 
+def _unquote_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _hermes_routing_config(text: str) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Read only the non-secret YAML routing keys needed by the doctor."""
+    model: dict[str, str] = {}
+    providers: dict[str, dict[str, str]] = {}
+    section = ""
+    provider = ""
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        key, separator, value = raw.strip().partition(":")
+        if not separator:
+            continue
+        if indent == 0:
+            section = key if key in {"model", "providers"} else ""
+            provider = ""
+        elif section == "model" and indent == 2 and value.strip():
+            model[key] = _unquote_yaml_scalar(value)
+        elif section == "providers" and indent == 2 and not value.strip():
+            provider = key
+            providers.setdefault(provider, {})
+        elif section == "providers" and indent == 4 and provider and value.strip():
+            providers[provider][key] = _unquote_yaml_scalar(value)
+    return model, providers
+
+
+def hermes_provider_check() -> Check:
+    try:
+        model, providers = _hermes_routing_config(HERMES_CONFIG.read_text(encoding="utf-8"))
+        provider_id = str(model.get("provider") or "")
+        provider_name = provider_id.removeprefix("custom:")
+        provider = providers.get(provider_name) or {}
+        base_url = str(model.get("base_url") or "").rstrip("/")
+        provider_url = str(provider.get("api") or "").rstrip("/")
+        selected_model = str(model.get("default") or "")
+        if not provider_name or not provider:
+            return Check("FAIL", "Hermes provider", f"profile {provider_id or '[missing]'} is unresolved")
+        if base_url != provider_url:
+            return Check("FAIL", "Hermes provider", "model URL and provider URL do not match")
+        request = urllib.request.Request(f"{provider_url}/models", headers={"User-Agent": "amori-doctor/1"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        available = {str(item.get("id")) for item in payload.get("data", [])}
+        if selected_model not in available:
+            return Check("FAIL", "Hermes provider", f"model {selected_model} is not available")
+        return Check("PASS", "Hermes provider", f"{provider_id}; model={selected_model}")
+    except FileNotFoundError:
+        return Check("FAIL", "Hermes provider", "config.yaml is missing")
+    except Exception as exc:
+        return Check("FAIL", "Hermes provider", str(exc)[:120])
+
+
 def main() -> int:
     env = {**load_env(ROOT / ".env"), **load_env(AGENTS / ".env")}
     checks: list[Check] = []
@@ -225,6 +306,8 @@ def main() -> int:
             http_check("n8n", "http://127.0.0.1:5678/healthz"),
             telegram_check("Telegram Emilia", env.get("TELEGRAM_BOT_TOKEN", "")),
             telegram_check("Telegram Support", env.get("SUPPORT_BOT_TOKEN", "")),
+            hermes_provider_check(),
+            image_bridge_check(),
             runtime_check(),
             backup_check(),
             storage_maintenance_check(),
